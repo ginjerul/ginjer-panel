@@ -57,6 +57,7 @@ jobs:
           php plugins/ginjer-network/tests/optimizer-test.php $A
           php plugins/ginjer-network/tests/velocity-test.php
           php plugins/ginjer-network/tests/health-test.php
+          php plugins/ginjer-network/tests/tools-test.php $A
 
       - name: Panel tests
         working-directory: panel

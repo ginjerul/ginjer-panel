@@ -19,6 +19,7 @@ use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Ginjer\Network\Services\Optimizer\Optimizer;
 use Ginjer\Network\Services\Optimizer\Rule;
+use Ginjer\Network\Services\Ops\ServerTools;
 use Ginjer\Network\Services\Optimizer\ServerOptimizer;
 use Illuminate\Support\Collection;
 use Illuminate\Support\HtmlString;
@@ -156,6 +157,30 @@ class Performance extends Page implements HasTable
                     }
                     $this->load();
                 }),
+            \Filament\Actions\ActionGroup::make([
+                Action::make('exclude_pregenerate')
+                    ->label('Pre-generate the map')
+                    ->icon('tabler-world-download')
+                    ->modalHeading('Pre-generate the map with Chunky')
+                    ->modalDescription(fn () => 'Generates chunks ahead of time, so exploring doesn\'t lag the server. Runs in the background; players can stay online.'
+                        . (ServerTools::shardOf($server)[0] ? ' This server is a shard: only the part of the square it owns is generated.' : ''))
+                    ->schema([
+                        \Filament\Forms\Components\TextInput::make('world')->default('world')->required(),
+                        \Filament\Forms\Components\TextInput::make('radius')->label('Radius around 0, 0 (blocks)')->numeric()->integer()->minValue(500)->default(5000)->required(),
+                    ])
+                    ->action(fn (array $data) => $this->pregenerate((string) $data['world'], (int) $data['radius'])),
+                Action::make('exclude_spark')
+                    ->label('Profile with spark')
+                    ->icon('tabler-activity-heartbeat')
+                    ->requiresConfirmation()
+                    ->modalDescription('Records what the server spends its time on for 60 seconds, then sends you a link to the profile. Best while the server is lagging.')
+                    ->action(fn () => $this->profile()),
+            ])
+                ->label('Tools')
+                ->icon('tabler-tool')
+                ->color('gray')
+                ->button()
+                ->visible(fn () => user()?->can(SubuserPermission::ControlConsole, $server)),
             Action::make('exclude_restart')
                 ->label('Restart')
                 ->icon('tabler-reload')
@@ -259,6 +284,61 @@ class Performance extends Page implements HasTable
         return $rows->count() . ' setting(s) will change. The files are backed up first, so you can undo it.'
             . ($gameplay->isEmpty() ? '' : ' Players may notice: ' . $gameplay->implode(', ') . '.')
             . ' Changes take effect after a restart.';
+    }
+
+    /** Installs a tool from Modrinth if it's missing. Returns true when it's there and loaded. */
+    private function ensureTool(string $name, string $label): bool
+    {
+        $tools = app(ServerTools::class);
+        if ($tools->findPlugin($this->server(), $name) !== null) {
+            return true;
+        }
+        try {
+            $file = $tools->installFromModrinth($this->server(), $name);
+            Notification::make()->title("Installed $label")->body("Downloaded $file from Modrinth. Restart the server so it loads, then try again.")->success()->persistent()->send();
+        } catch (Throwable $exception) {
+            Notification::make()->title("Couldn't install $label")->body($exception->getMessage())->danger()->send();
+        }
+
+        return false;
+    }
+
+    private function pregenerate(string $world, int $radius): void
+    {
+        if (!$this->ensureTool(ServerTools::CHUNKY, 'Chunky')) {
+            return;
+        }
+        [$shard, $regions] = ServerTools::shardOf($this->server());
+        $area = ServerTools::area($regions, $shard, $radius);
+        if ($area === null) {
+            Notification::make()->title('Nothing to generate here')->body("This shard owns none of the area within $radius blocks of 0, 0.")->warning()->send();
+
+            return;
+        }
+        try {
+            $this->server()->send(ServerTools::chunkyCommands($world, $area));
+            Notification::make()
+                ->title('Pre-generation started')
+                ->body(sprintf('Chunky is generating x %d to %d, z %d to %d. Progress shows in the console; "chunky pause" stops it.', $area['min-x'], $area['max-x'], $area['min-z'], $area['max-z']))
+                ->success()->send();
+        } catch (Throwable $exception) {
+            Notification::make()->title('Couldn\'t start Chunky')->body('The server must be running. ' . $exception->getMessage())->danger()->send();
+        }
+    }
+
+    private function profile(): void
+    {
+        if (!$this->ensureTool(ServerTools::SPARK, 'spark')) {
+            return;
+        }
+        try {
+            $previous = rescue(fn () => app(ServerTools::class)->sparkLink($this->server()), null, false);
+            $this->server()->send('spark profiler start --timeout 60');
+            \Ginjer\Network\Jobs\ProfileWithSpark::dispatch($this->server()->id, (int) user()?->id, 60, $previous);
+            Notification::make()->title('Profiling for 60 seconds')->body('You\'ll get a notification with the link when spark has uploaded it.')->success()->send();
+        } catch (Throwable $exception) {
+            Notification::make()->title('Couldn\'t start spark')->body('The server must be running. ' . $exception->getMessage())->danger()->send();
+        }
     }
 
     /** @param  list<string>  $ids */

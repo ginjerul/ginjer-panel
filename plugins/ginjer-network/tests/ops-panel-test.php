@@ -78,6 +78,14 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
         return Http::response(str_ends_with($url, '/1') ? 'NEW-NODES' : 'NEW-MAP', 200);
     }
 
+    // Modrinth
+    if (str_starts_with($url, 'https://api.modrinth.com/v2/project/chunky/version')) {
+        return Http::response(($q['loaders'] ?? '') === '["paper"]' ? [
+            ['version_number' => '1.4.40', 'files' => [['primary' => true, 'filename' => 'Chunky-Bukkit-1.4.40.jar', 'url' => 'https://cdn.modrinth.com/data/fALzjamp/versions/x/Chunky-Bukkit-1.4.40.jar']]],
+            ['version_number' => '1.4.36', 'files' => [['primary' => true, 'filename' => 'Chunky-Bukkit-1.4.36.jar', 'url' => 'https://cdn.modrinth.com/old.jar']]],
+        ] : [], 200);
+    }
+
     // Wings
     if ($path === '/upload/file') {
         if ($failUpload) {
@@ -126,6 +134,11 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
             $file = trim($q['file'], '/');
 
             return isset($fs[$uuid][$file]) ? $ok($fs[$uuid][$file]) : $ok(['error' => 'not found'], 404);
+        case $rest === '/files/pull':
+            $fs[$uuid][trim($data['root'], '/') . '/' . $data['file_name']] = 'downloaded from ' . $data['url'];
+            $log[] = "pull {$names[$uuid]} {$data['url']}";
+
+            return $ok('', 204);
         case $rest === '/files/rename':
             foreach ($data['files'] as $r) {
                 $from = trim($data['root'] . '/' . $r['from'], '/');
@@ -312,6 +325,28 @@ try {
     check('restore: every running server is stopped first', $stops === 4 && array_search($restores->first(), $log) > max(array_keys(array_filter($log, fn ($l) => str_ends_with($l, ' stop')))), json_encode($log));
     check('restore: every server restored exactly (truncate)', $problems === [] && $restores->count() === 5 && $restores->every(fn ($l) => str_ends_with($l, 'truncate=true')), json_encode([$problems, $restores]));
     check('restore: servers marked as restoring', Server::whereIn('id', [$west->id, $redis->id])->get()->every(fn ($s) => $s->status?->value === 'restoring_backup'));
+
+    // ---------------- Chunky and spark
+    $tools = app(\Ginjer\Network\Services\Ops\ServerTools::class);
+    check('tools: Chunky isn\'t there yet', $tools->findPlugin($west, 'chunky') === null);
+    $file = $tools->installFromModrinth($west, 'chunky');
+    check('tools: the newest Paper build is downloaded by Wings into plugins/', $file === 'Chunky-Bukkit-1.4.40.jar'
+        && ($fs[$west->uuid]['plugins/Chunky-Bukkit-1.4.40.jar'] ?? '') === 'downloaded from https://cdn.modrinth.com/data/fALzjamp/versions/x/Chunky-Bukkit-1.4.40.jar');
+    check('tools: then it\'s found', $tools->findPlugin($west, 'chunky') === 'Chunky-Bukkit-1.4.40.jar');
+    [$shardName, $shardRegions] = \Ginjer\Network\Services\Ops\ServerTools::shardOf($west);
+    check('tools: a shard knows its name for pre-generation', $shardName === 'west');
+    check('tools: a server outside a network isn\'t a shard', \Ginjer\Network\Services\Ops\ServerTools::shardOf($redis) === [null, null]);
+
+    $fs[$west->uuid]['logs/latest.log'] = "[10:00:00 INFO]: https://spark.lucko.me/OldProfile1\n";
+    $before = DB::table('notifications')->where('notifiable_id', $user->id)->count();
+    $fs[$west->uuid]['logs/latest.log'] .= "[10:01:05 INFO]: [⚡] Profiler stopped & upload complete!\n[10:01:05 INFO]: [⚡] https://spark.lucko.me/NewProfile2\n";
+    app()->call([new \Ginjer\Network\Jobs\ProfileWithSpark($west->id, $user->id, 60, 'https://spark.lucko.me/OldProfile1'), 'handle']);
+    $note = DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->slice($before)->implode(' ');
+    check('spark: the new profile link is sent, not the old one', str_contains($note, 'NewProfile2') && !str_contains($note, 'OldProfile1'), $note);
+    $before = DB::table('notifications')->where('notifiable_id', $user->id)->count();
+    app()->call([new \Ginjer\Network\Jobs\ProfileWithSpark($west->id, $user->id, 60, 'https://spark.lucko.me/NewProfile2'), 'handle']);
+    $note = DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->slice($before)->implode(' ');
+    check('spark: no new link is reported as a problem, not as the old link', str_contains($note, 'No spark profile link') && !str_contains($note, 'Open the profile'), $note);
 } catch (Throwable $exception) {
     check('no exception', false, get_class($exception) . ': ' . $exception->getMessage() . ' @ ' . $exception->getFile() . ':' . $exception->getLine());
 } finally {
