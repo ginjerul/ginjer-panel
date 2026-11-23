@@ -164,7 +164,14 @@ try {
                 return Http::response(['error' => 'not found'], 404, $wings);
             }
 
-            return Http::response($file === 'reef.yml' ? $reefConfig : $nodesConfig, 200, $wings);
+            return match ($file) {
+                'reef.yml' => Http::response($reefConfig, 200, $wings),
+                'velocity.toml' => Http::response(file_get_contents(__DIR__ . '/fixtures/velocity.toml'), 200, $wings),
+                'forwarding.secret' => Http::response("s3cr3t-forwarding\n", 200, $wings),
+                'config/paper-global.yml' => Http::response("proxies:\n  velocity:\n    enabled: false\n    online-mode: false\n    secret: ''\n", 200, $wings),
+                'server.properties' => Http::response("online-mode=true\nserver-port=25565\n", 200, $wings),
+                default => Http::response($nodesConfig, 200, $wings),
+            };
         }
         if (str_contains($request->url(), '/files/write')) {
             $written[$request->url()] = $request->body();
@@ -176,7 +183,7 @@ try {
     };
     $results = app(ShardConfigService::class)->push($network->fresh('members.server'));
     $byServer = collect($results)->keyBy('server');
-    check('push reports both shards', $byServer->count() === 2, json_encode($results));
+    check('push reports both shards and the proxy', $byServer->count() === 3 && ($byServer['gn-proxy']['ok'] ?? false), json_encode($results));
     check('push skips a shard without reef.yml with a hint', str_contains($byServer['gn-east']['message'] ?? '', 'start this shard once'), json_encode($results));
     check('a skipped shard is not marked complete', ($byServer['gn-east']['complete'] ?? null) === false && ($byServer['gn-west']['complete'] ?? null) === true);
 
@@ -191,7 +198,15 @@ try {
     check('west nodes config: leader', ($westNodes['sharding']['role'] ?? null) === 'leader' && $westNodes['sharding']['name'] === 'west' && $westNodes['sharding']['enabled'] === true);
     check('east nodes config: follower (written even without reef.yml)', ($eastNodes['sharding']['role'] ?? null) === 'follower' && $eastNodes['sharding']['name'] === 'east');
     check('nodes config: redis password set', ($westNodes['sharding']['redis']['password'] ?? null) === 's3cret');
-    check('nothing written to redis or proxy', collect($written)->keys()->filter(fn ($url) => str_contains($url, $redis->uuid) || str_contains($url, $proxy->uuid))->isEmpty());
+    check('nothing written to redis', collect($written)->keys()->filter(fn ($url) => str_contains($url, $redis->uuid))->isEmpty());
+    $velocity = (string) $file($proxy, 'velocity.toml');
+    check('proxy: velocity.toml lists the shards, leader first', str_contains($velocity, 'west = "') && str_contains($velocity, 'east = "') && str_contains($velocity, 'try = ["west", "east"]'), $velocity);
+    check('proxy: sample servers and their forced hosts gone, forwarding modern', !str_contains($velocity, 'lobby') && str_contains($velocity, 'player-info-forwarding-mode = "modern"'));
+    check('proxy: shard addresses use the allocation', str_contains($velocity, '"10.0.0.') && str_contains($velocity, ':25565"'), $velocity);
+    check('proxy: only velocity.toml is written there', collect($written)->keys()->filter(fn ($url) => str_contains($url, $proxy->uuid))->count() === 1);
+    $global = Yaml::parse((string) $file($west, 'config/paper-global.yml'));
+    check('shards get the proxy\'s forwarding secret', ($global['proxies']['velocity']['secret'] ?? null) === 's3cr3t-forwarding' && $global['proxies']['velocity']['enabled'] === true, json_encode($global));
+    check('shards switch online-mode off (the proxy checks accounts)', str_contains((string) $file($east, 'server.properties'), 'online-mode=false'));
 
     // problems block a push
     $network->update(['regions' => "- {server: west, min-x: 0, min-z: 0, max-x: 10, max-z: 10}\n- {server: north, min-x: 10, min-z: 0, max-x: 20, max-z: 10}\n"]);

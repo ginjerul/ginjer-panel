@@ -25,8 +25,8 @@ jobs:
 
       - name: Egg is valid YAML with a valid install script
         run: |
-          python3 -c "import yaml; e = yaml.safe_load(open('eggs/egg-reef-shard.yaml')); open('/tmp/install.sh','w').write(e['scripts']['installation']['script'])"
-          bash -n /tmp/install.sh
+          python3 -c "import yaml; e = yaml.safe_load(open('eggs/egg-reef-shard.yaml')); open('$RUNNER_TEMP/install.sh','w').write(e['scripts']['installation']['script'])"
+          bash -n "$RUNNER_TEMP/install.sh"
 
       - name: Install Pelican
         run: |
@@ -55,6 +55,7 @@ jobs:
           php plugins/ginjer-network/tests/services-test.php $A
           php plugins/ginjer-network/tests/split-test.php $A $F/nodes-world.json $F/nodes-towns.json
           php plugins/ginjer-network/tests/optimizer-test.php $A
+          php plugins/ginjer-network/tests/velocity-test.php
 
       - name: Panel tests
         working-directory: panel

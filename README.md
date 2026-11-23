@@ -18,7 +18,7 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 - **Push config to shards:** writes the `sharding` section of `reef.yml` (the same regions everywhere, each shard's own `this-server`) and of `plugins/nodes/config.yml` (leader or follower, shard name, Redis) on every shard. Nodes' config keeps all its comments. Before pushing, it checks that the regions are valid, that every shard owns an area and that there's exactly one leader.
 - **Status:** each server's state, the shard that holds the Nodes leader lock in Redis, and each shard's role and player count as Nodes reports them. It warns when the lock holder isn't the leader set in the panel (after a failover).
 - **Promote now:** runs `nda shards promote` on a follower when the leader is down.
-- **Velocity servers:** the `[servers]` lines for the proxy's `velocity.toml`.
+- **Velocity servers:** the `[servers]` lines for the proxy's `velocity.toml`. With a proxy in the network, **Push config** writes them for you. It also keeps every comment, puts the leader first in `try`, drops the sample forced hosts that would stop Velocity from starting, sets forwarding to `modern`, and gives every shard the proxy's `forwarding.secret` (through the egg's `VELOCITY_SECRET` and in `paper-global.yml`). Shards on the proxy's node that listen on every interface are reached through Wings' Docker gateway (`GINJER_NETWORK_DOCKER_GATEWAY`, default `172.18.0.1`), and shards on other nodes through their node's address.
 
 ![The servers in a network: proxy, Redis and three Reef shards, with the Nodes leader marked](docs/screenshots/servers.png)
 
@@ -97,7 +97,7 @@ Every jar in `plugins/` with an on/off switch. Off renames `X.jar` to `X.jar.dis
 4. **Shards:** import `eggs/egg-reef-shard.yaml` in **Admin → Eggs → Import** and create one server per shard. Set the same Velocity secret on each, plus a GitHub token if your Nodes repository is private. Give each shard a copy of the **same world folder, including `uid.dat`**.
 5. Start every shard once so Reef and Nodes create their config files, then stop them.
 6. **Network:** in **Ginjer → Networks**, create a network, paste the regions and the Redis address, and add the servers. Mark one shard as the leader.
-7. **Push config to shards**, paste the **Velocity servers** lines into the proxy's `velocity.toml`, then **Power → Start network**.
+7. Start the proxy once so Velocity creates its files, then **Push config to shards** (it fills in the proxy's `velocity.toml` too) and **Power → Start network**.
 
 See Reef's `SHARDING.md` and Nodes' `SHARDING-DESIGN.md` for what sharding does and its limits.
 

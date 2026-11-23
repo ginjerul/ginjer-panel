@@ -91,7 +91,7 @@ class EditNetwork extends EditRecord
                 ->icon('tabler-route')
                 ->color('gray')
                 ->modalHeading('Shards for velocity.toml')
-                ->modalDescription('Paste this into the [servers] section of velocity.toml on the proxy. The addresses must be reachable from the proxy\'s container.')
+                ->modalDescription('Push config writes this into the proxy\'s velocity.toml for you when the proxy is in the network. Without one, paste it into the [servers] section yourself.')
                 ->modalContent(fn () => $this->velocityHtml())
                 ->modalSubmitAction(false)
                 ->modalCancelActionLabel('Close'),
@@ -178,7 +178,8 @@ class EditNetwork extends EditRecord
             return new HtmlString('<p>No shards yet.</p>');
         }
 
-        $lines = $shards->map(fn (NetworkMember $m) => ($m->shard_name ?: $m->server->name) . ' = "' . ($m->server->allocation?->address ?? 'no-allocation') . '"');
+        $proxy = $this->getRecord()->membersWithRole(MemberRole::Proxy)->first()?->server ?? $shards->first()->server;
+        $lines = $shards->map(fn (NetworkMember $m) => ($m->shard_name ?: $m->server->name) . ' = "' . (ShardConfigService::addressFor($m, $proxy) ?: 'no-allocation') . '"');
         $try = 'try = [' . $shards->map(fn (NetworkMember $m) => '"' . ($m->shard_name ?: $m->server->name) . '"')->implode(', ') . ']';
 
         return new HtmlString('<pre style="font-family:monospace;white-space:pre-wrap;padding:8px;border-radius:6px;background:rgba(127,127,127,.12)">[servers]' . "\n" . e($lines->implode("\n")) . "\n" . e($try) . '</pre>'

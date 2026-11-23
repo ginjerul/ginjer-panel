@@ -3,6 +3,7 @@
 namespace Ginjer\Network\Services;
 
 use Illuminate\Contracts\Filesystem\FileNotFoundException;
+use App\Models\Server;
 use App\Repositories\Daemon\DaemonFileRepository;
 use Ginjer\Network\Enums\MemberRole;
 use Ginjer\Network\Models\Network;
@@ -68,7 +69,99 @@ class ShardConfigService
             }
         }
 
+        foreach ($network->membersWithRole(MemberRole::Proxy) as $proxy) {
+            try {
+                $notes = $this->writeProxy($network, $proxy);
+                $results[] = ['server' => $proxy->server->name, 'ok' => true, 'complete' => $notes === [], 'message' => $notes === [] ? 'velocity.toml updated, forwarding secret shared with the shards. Restart it to apply.' : implode(' ', $notes)];
+            } catch (Throwable $exception) {
+                $results[] = ['server' => $proxy->server->name, 'ok' => false, 'complete' => false, 'message' => $exception->getMessage()];
+            }
+        }
+
         return $results;
+    }
+
+    /**
+     * The address the proxy reaches a shard on. A shard that listens on every interface (or only
+     * on localhost) is reached through Docker's gateway when it's on the proxy's node, and through
+     * its node's address otherwise.
+     */
+    public static function addressFor(NetworkMember $shard, Server $proxy): string
+    {
+        $allocation = $shard->server->allocation;
+        if ($allocation === null) {
+            return '';
+        }
+        $ip = $allocation->ip;
+        if (in_array($ip, ['0.0.0.0', '::', '127.0.0.1', '::1', ''], true)) {
+            $ip = $shard->server->node_id === $proxy->node_id
+                ? (string) config('ginjer-network.docker_gateway', '172.18.0.1')
+                : $shard->server->node->fqdn;
+        }
+
+        return (str_contains($ip, ':') ? "[$ip]" : $ip) . ':' . $allocation->port;
+    }
+
+    /** @return list<string> notes for the admin */
+    private function writeProxy(Network $network, NetworkMember $proxy): array
+    {
+        $server = $proxy->server;
+        $repository = $this->files->setServer($server);
+        $toml = $this->read($repository, 'velocity.toml');
+        if ($toml === null) {
+            return ['No velocity.toml yet: start the proxy once so Velocity creates it, then push again.'];
+        }
+
+        // leader first: new players log in near spawn, which the leader keeps
+        $shards = $network->membersWithRole(MemberRole::Shard)->sortByDesc('nodes_leader')->values();
+        $servers = [];
+        foreach ($shards as $shard) {
+            $servers[$shard->shard_name] = self::addressFor($shard, $server);
+        }
+        $toml = VelocityConfig::setServers($toml, $servers, array_keys($servers));
+        $toml = VelocityConfig::setTopLevel($toml, 'player-info-forwarding-mode', 'modern');
+        $repository->putContent('velocity.toml', $toml);
+
+        // the shards need the proxy's forwarding secret
+        $secret = trim((string) $this->read($repository, 'forwarding.secret'));
+        if ($secret === '') {
+            return ['velocity.toml updated, but there is no forwarding.secret on the proxy yet: start it once, then push again so the shards get the secret.'];
+        }
+        foreach ($shards as $shard) {
+            $this->shareSecret($shard->server, $secret);
+        }
+
+        return [];
+    }
+
+    /** Puts the proxy's forwarding secret where a shard reads it: the egg variable (if the egg has one) and paper-global.yml. */
+    private function shareSecret(Server $shard, string $secret): void
+    {
+        $variable = $shard->egg?->variables()->where('env_variable', 'VELOCITY_SECRET')->first();
+        if ($variable !== null) {
+            // the shard egg writes this into paper-global.yml every time the shard starts
+            \App\Models\ServerVariable::query()->updateOrCreate(
+                ['server_id' => $shard->id, 'variable_id' => $variable->id],
+                ['variable_value' => $secret],
+            );
+        }
+
+        $repository = $this->files->setServer($shard);
+        $global = $this->read($repository, 'config/paper-global.yml');
+        if ($global !== null) {
+            $editor = (new YamlScalarEditor($global))
+                ->set('proxies.velocity.enabled', true)
+                ->set('proxies.velocity.online-mode', true)
+                ->set('proxies.velocity.secret', $secret);
+            $repository->putContent('config/paper-global.yml', $editor->content());
+        }
+        $properties = $this->read($repository, 'server.properties');
+        if ($properties !== null) {
+            $editor = new \Ginjer\Network\Services\Optimizer\PropertiesEditor($properties);
+            if ($editor->get('online-mode') !== 'false' && $editor->set('online-mode', 'false')) {
+                $repository->putContent('server.properties', $editor->content()); // the proxy checks accounts
+            }
+        }
     }
 
     /** The reef.yml "sharding" section for one shard. */
