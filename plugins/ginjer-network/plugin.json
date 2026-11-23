@@ -2,14 +2,15 @@
     "id": "ginjer-network",
     "name": "Ginjer Network",
     "author": "ginjerul",
-    "version": "0.1.0",
-    "description": "Run a Velocity proxy, Reef shards and Redis as one network: start and stop them together, push the shard regions to every shard and see which shard leads Nodes.",
+    "version": "0.2.0",
+    "description": "Run a Velocity proxy, Reef shards and Redis as one network, split a server into shards, tune a server's Paper, Reef and Nodes settings, and switch plugins on and off.",
     "category": "plugin",
     "url": "https://github.com/ginjerul/ginjer-panel",
     "namespace": "Ginjer\\Network",
     "class": "GinjerNetworkPlugin",
     "panels": [
-        "admin"
+        "admin",
+        "server"
     ],
     "panel_version": null,
     "api_version": 1,

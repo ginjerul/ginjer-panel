@@ -1,0 +1,38 @@
+# Hand-built from WorldConfiguration (Paper c5eb079) for tests; a real server writes more keys.
+_version: 31
+chunks:
+  delay-chunk-unloads-by: 10s
+  entity-per-chunk-save-limit:
+    arrow: -1
+    ender_pearl: -1
+    experience_orb: -1
+    fireball: -1
+    small_fireball: -1
+    snowball: -1
+  fixed-chunk-inhabited-time: -1
+  flush-regions-on-save: false
+  max-auto-save-chunks-per-tick: 24
+  prevent-moving-into-unloaded-chunks: false
+collisions:
+  max-entity-collisions: 8
+entities:
+  armor-stands:
+    do-collision-entity-lookups: true
+    tick: true
+environment:
+  optimize-explosions: false
+  treasure-maps:
+    enabled: true
+    find-already-discovered:
+      loot-tables: default
+      villager-trade: false
+hopper:
+  cooldown-when-full: true
+  disable-move-event: false
+  ignore-occluding-blocks: false
+misc:
+  redstone-implementation: VANILLA
+tick-rates:
+  container-update: 1
+  grass-spread: 1
+  mob-spawner: 1

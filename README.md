@@ -64,6 +64,31 @@ Settings (optional, in the panel's `.env`):
 | `GINJER_NETWORK_NODES_CONFIG` | `plugins/nodes/config.yml` | Nodes' config file |
 | `GINJER_NETWORK_REDIS_TIMEOUT` | `2` | Seconds to wait for Redis when reading the status |
 
+## Server pages
+
+The plugin also adds two pages to every server's own panel. Both need the "file update" permission on that server.
+
+### Performance
+
+Reads the server's `server.properties`, `bukkit.yml`, `spigot.yml`, `config/paper-world-defaults.yml`, `reef.yml`, Nodes' `config.yml` and Java start-up flags. For each recommended setting it shows the current value, the recommended one and why.
+
+- **Balanced** only changes things players barely notice. Examples: smoother auto-saves, capped junk entities per chunk, faster explosions and redstone, item merging, Aikar's garbage collector flags.
+- **Performance** also trades some gameplay for speed: shorter view and simulation distance, lower mob limits, brainless spawner mobs and so on. Every change players may notice is marked.
+- Tick the ones you want, or **Apply all**. The files are backed up in the panel first, and **Undo last apply** puts them back. Changes take effect after a restart (there's a Restart button).
+- It knows what each server is. Reef and Nodes settings only appear where they're installed. Turning off compression only appears for servers behind a Velocity proxy, and shard sync batching only for the Nodes leader.
+- It never turns off Paper's hopper move event on a server with Nodes. Nodes uses that event to stop hoppers draining protected town chests.
+- Java flags keep every flag they don't manage, such as `-Dterminal.jline=false` for the console. The heap is capped at 85% of the server's memory so Java's memory outside the heap fits in the container. Changing the start-up command also needs the "startup update" permission.
+
+The setting names and defaults were checked against the source of Paper 1.21.11 (the commit Reef is built on), Reef and Nodes.
+
+![The Performance page with the Performance profile](docs/screenshots/performance.png)
+
+### Plugins
+
+Every jar in `plugins/` with an on/off switch. Off renames `X.jar` to `X.jar.disabled`, so the server skips it. On renames it back. Nothing is deleted and the plugin's data folder stays. It warns when a switch breaks the Nodes stack, for example Nodes on but the Kotlin runtime off. Changes take effect after a restart.
+
+![The Plugins page: two plugins switched off, one back on, and a warning](docs/screenshots/plugins.png)
+
 ## Setting up a sharded network
 
 1. **Redis:** create a server from a Redis egg (for example the one in [pelican-eggs/database](https://github.com/pelican-eggs/database)) and give it a password.
@@ -94,7 +119,12 @@ The region checks and the Nodes config editor run without a panel:
 php plugins/ginjer-network/tests/services-test.php <panel>/vendor/autoload.php [path/to/nodes/config.yml]
 ```
 
-The split maths (coverage, balance, chunk borders, RAM rules) runs without a panel too:
+The optimizer (on the config files in `tests/fixtures/`, plus Nodes' real `config.yml` if you pass it) and the split maths (coverage, balance, chunk borders, RAM rules) run without a panel too. The autoloader needs `symfony/yaml` and `illuminate/collections`, which a panel's `vendor/autoload.php` has:
+
+```bash
+php plugins/ginjer-network/tests/optimizer-test.php <vendor/autoload.php> [path/to/nodes/config.yml]
+```
+
 
 ```bash
 php plugins/ginjer-network/tests/split-test.php <vendor/autoload.php> [world.json towns.json]

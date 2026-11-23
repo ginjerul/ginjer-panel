@@ -17,6 +17,7 @@ class GinjerNetworkPlugin implements Plugin
         $id = str($panel->getId())->title();
 
         $panel->discoverResources(plugin_path($this->getId(), "src/Filament/$id/Resources"), "Ginjer\\Network\\Filament\\$id\\Resources");
+        $panel->discoverPages(plugin_path($this->getId(), "src/Filament/$id/Pages"), "Ginjer\\Network\\Filament\\$id\\Pages");
     }
 
     public function boot(Panel $panel): void {}

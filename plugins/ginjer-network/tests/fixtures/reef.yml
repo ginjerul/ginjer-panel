@@ -1,0 +1,11 @@
+optimizations:
+  check-stuck-in-wall-interval: 10
+  dynamic-activation-of-brain:
+    enabled: true
+    start-distance: 12
+  async-mob-spawning: true
+  only-players-push-entities: false
+  async-player-data-saving: true
+  skip-useless-move-packets: true
+sharding:
+  enabled: false

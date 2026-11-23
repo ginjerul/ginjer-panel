@@ -29,6 +29,9 @@ require getcwd() . '/vendor/autoload.php';
 $app = require getcwd() . '/bootstrap/app.php';
 $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
+// notifications are queued; run them at once so the checks can see them
+config(['queue.default' => 'sync']);
+
 $failures = 0;
 function check(string $name, bool $ok, string $detail = ''): void
 {
