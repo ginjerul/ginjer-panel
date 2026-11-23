@@ -25,6 +25,18 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property ?string $redis_password
  * @property int $redis_database
  * @property string $key_prefix
+ * @property ?string $reef_jar_url
+ * @property ?string $nodes_repo
+ * @property string $nodes_release
+ * @property ?string $github_token
+ * @property int $restart_settle_seconds
+ * @property bool $health_alerts
+ * @property int $lag_tps
+ * @property int $lag_minutes
+ * @property bool $restart_on_lag
+ * @property ?int $backup_every_hours
+ * @property int $backup_keep
+ * @property ?\Illuminate\Support\Carbon $last_backup_at
  * @property Collection<int, NetworkMember> $members
  */
 class Network extends Model
@@ -44,14 +56,30 @@ class Network extends Model
         'redis_password',
         'redis_database',
         'key_prefix',
+        'reef_jar_url',
+        'nodes_repo',
+        'nodes_release',
+        'github_token',
+        'restart_settle_seconds',
+        'health_alerts',
+        'lag_tps',
+        'lag_minutes',
+        'restart_on_lag',
+        'backup_every_hours',
+        'backup_keep',
+        'last_backup_at',
     ];
 
-    protected $hidden = ['redis_password'];
+    protected $hidden = ['redis_password', 'github_token'];
 
     protected function casts(): array
     {
         return [
             'redis_password' => 'encrypted',
+            'github_token' => 'encrypted',
+            'health_alerts' => 'boolean',
+            'restart_on_lag' => 'boolean',
+            'last_backup_at' => 'datetime',
             'border_protection' => 'integer',
             'handoff_timeout_seconds' => 'integer',
             'redis_port' => 'integer',

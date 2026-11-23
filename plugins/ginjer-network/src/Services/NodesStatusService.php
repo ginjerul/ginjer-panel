@@ -10,12 +10,12 @@ use Throwable;
 /**
  * Reads what Nodes keeps in Redis about its shards:
  * - <prefix>:leader        the name of the shard holding the leader lock
- * - <prefix>:shard:<name>  "leader|follower" | last seen (ms) | players online, expires when the shard stops
+ * - <prefix>:shard:<name>  "leader|follower" | last seen (ms) | players | TPS | ms per tick (newer Nodes), expires when the shard stops
  */
 class NodesStatusService
 {
     /**
-     * @return array{reachable: bool, error: ?string, leader: ?string, shards: array<string, array{role: string, seen: ?Carbon, players: int}>}
+     * @return array{reachable: bool, error: ?string, leader: ?string, shards: array<string, array{role: string, seen: ?Carbon, players: int, tps: ?float, mspt: ?float}>}
      */
     public function status(Network $network): array
     {
@@ -36,6 +36,8 @@ class NodesStatusService
                     'role' => $parts[0] ?? '?',
                     'seen' => isset($parts[1]) && is_numeric($parts[1]) ? Carbon::createFromTimestampMs((int) $parts[1]) : null,
                     'players' => (int) ($parts[2] ?? 0),
+                    'tps' => isset($parts[3]) && is_numeric($parts[3]) ? (float) $parts[3] : null,
+                    'mspt' => isset($parts[4]) && is_numeric($parts[4]) ? (float) $parts[4] : null,
                 ];
             }
             ksort($shards);

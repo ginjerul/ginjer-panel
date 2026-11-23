@@ -33,7 +33,7 @@ class EditNetwork extends EditRecord
                 ->icon('tabler-heartbeat')
                 ->color('gray')
                 ->modalHeading(fn () => $this->getRecord()->name . ' status')
-                ->modalWidth(Width::TwoExtraLarge)
+                ->modalWidth(Width::FiveExtraLarge)
                 ->modalContent(fn (NodesStatusService $service) => $this->statusHtml($service))
                 ->modalSubmitAction(false)
                 ->modalCancelActionLabel('Close'),
@@ -43,10 +43,56 @@ class EditNetwork extends EditRecord
                 $this->powerAction('restart', 'Restart network', 'tabler-reload', 'warning'),
                 $this->powerAction('stop', 'Stop network', 'tabler-player-stop', 'danger'),
                 $this->powerAction('kill', 'Kill network', 'tabler-alert-triangle', 'danger'),
+                Action::make('exclude_rolling_restart')
+                    ->label('Rolling restart')
+                    ->icon('tabler-refresh-dot')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalDescription('Restarts the shards one at a time, followers first and the leader last, waiting for each to come back before the next. The network never goes down as a whole.')
+                    ->action(fn () => $this->startRolling([])),
             ])
                 ->label('Power')
                 ->icon('tabler-power')
                 ->button(),
+
+            Action::make('exclude_update')
+                ->label('Update shards')
+                ->icon('tabler-download')
+                ->color('primary')
+                ->modalHeading('Update the shards')
+                ->modalDescription('Downloads the newest files once, uploads them to every shard, then restarts the shards one at a time (followers first, leader last), waiting for each to come back. If anything fails, the rest of the shards are left alone.')
+                ->fillForm(fn () => [
+                    'reef' => true,
+                    'nodes' => filled($this->getRecord()->nodes_repo),
+                    'ginjermap' => filled($this->getRecord()->nodes_repo),
+                    'reef_jar_url' => $this->getRecord()->reef_jar_url ?: 'https://github.com/ginjerul/reef/releases/download/dev-main/reef.jar',
+                    'nodes_repo' => $this->getRecord()->nodes_repo ?: 'ginjerul/ginjer-nodes',
+                    'nodes_release' => $this->getRecord()->nodes_release ?: 'dev-master',
+                    'restart_settle_seconds' => $this->getRecord()->restart_settle_seconds,
+                ])
+                ->schema([
+                    \Filament\Schemas\Components\Grid::make(3)->schema([
+                        \Filament\Forms\Components\Toggle::make('reef')->label('Reef'),
+                        \Filament\Forms\Components\Toggle::make('nodes')->label('Nodes'),
+                        \Filament\Forms\Components\Toggle::make('ginjermap')->label('GinjerMap'),
+                    ]),
+                    \Filament\Forms\Components\TextInput::make('reef_jar_url')->label('Reef download')->url()->helperText('Default: the newest main build from Reef\'s dev-main release.'),
+                    \Filament\Schemas\Components\Grid::make(2)->schema([
+                        \Filament\Forms\Components\TextInput::make('nodes_repo')->label('Nodes repository')->helperText('Its releases need nodes.jar and ginjermap.jar.'),
+                        \Filament\Forms\Components\TextInput::make('nodes_release')->label('Release')->helperText('A tag, dev-master, or latest.'),
+                    ]),
+                    \Filament\Forms\Components\TextInput::make('github_token')
+                        ->label('GitHub token')
+                        ->password()->revealable()
+                        ->dehydrated(fn ($state) => filled($state))
+                        ->helperText(fn () => filled($this->getRecord()->github_token) ? 'A token is saved. Leave empty to keep it.' : 'Only for a private repository: a fine-grained token that can read its contents. Stored encrypted.'),
+                    \Filament\Forms\Components\TextInput::make('restart_settle_seconds')->label('Wait after each shard (seconds)')->numeric()->minValue(0)->required(),
+                ])
+                ->modalSubmitActionLabel('Update')
+                ->action(function (array $data) {
+                    $this->getRecord()->update(\Illuminate\Support\Arr::only($data, ['reef_jar_url', 'nodes_repo', 'nodes_release', 'github_token', 'restart_settle_seconds']));
+                    $this->startRolling(['reef' => (bool) $data['reef'], 'nodes' => (bool) $data['nodes'], 'ginjermap' => (bool) $data['ginjermap']]);
+                }),
 
             Action::make('push_config')
                 ->label('Push config to shards')
@@ -85,6 +131,13 @@ class EditNetwork extends EditRecord
                         ->send();
                 }),
 
+            Action::make('plugins')
+                ->label('Plugins')
+                ->tooltip('Plugins on all shards')
+                ->icon('tabler-plug')
+                ->color('gray')
+                ->url(fn () => NetworkResource::getUrl('plugins', ['record' => $this->getRecord()])),
+
             Action::make('velocity')
                 ->label('Velocity servers')
                 ->tooltip('Velocity servers')
@@ -98,6 +151,18 @@ class EditNetwork extends EditRecord
 
             DeleteAction::make(),
         ];
+    }
+
+    /** @param  array{reef?: bool, nodes?: bool, ginjermap?: bool}  $what */
+    private function startRolling(array $what): void
+    {
+        \Ginjer\Network\Jobs\RollingUpdate::dispatch($this->getRecord()->id, $what, (int) auth()->id());
+        $update = in_array(true, $what, true);
+        Notification::make()
+            ->title($update ? 'Update started' : 'Rolling restart started')
+            ->body('The shards restart one at a time. You\'ll get a notification when it\'s done. This needs the panel\'s queue worker.')
+            ->success()
+            ->send();
     }
 
     private function powerAction(string $action, string $label, string $icon, string $color): Action
@@ -130,45 +195,46 @@ class EditNetwork extends EditRecord
     {
         $network = $this->getRecord()->load('members.server');
         $nodes = $service->status($network);
+        $shards = app(\Ginjer\Network\Services\Health\NetworkHealth::class)->shards($network);
+        $cell = fn ($v) => '<td style="padding:4px 8px;white-space:nowrap">' . $v . '</td>';
+        $tpsColor = fn (?float $tps) => $tps === null ? '' : ($tps >= 19 ? 'color:rgb(34 197 94)' : ($tps >= $network->lag_tps ? 'color:rgb(234 179 8)' : 'color:rgb(239 68 68)'));
 
         $rows = '';
-        foreach ($network->members->sortBy(fn (NetworkMember $m) => [$m->role->value, $m->shard_name]) as $member) {
+        foreach ($shards as $name => $s) {
+            $memory = $s['memory_mb'] !== null ? number_format($s['memory_mb'] / 1024, 1) . ($s['memory_limit_mb'] ? ' / ' . number_format($s['memory_limit_mb'] / 1024, 1) : '') . ' GB' : '-';
+            $rows .= '<tr>' . $cell('<b>' . e($name) . '</b><br><span style="opacity:.7">' . e($s['server']) . '</span>')
+                . $cell(e($s['state'] ?? 'not answering'))
+                . $cell($s['reporting'] ? e($s['role']) : '<span style="color:rgb(234 179 8)">not reporting</span>')
+                . $cell($s['tps'] !== null ? '<span style="' . $tpsColor($s['tps']) . '">' . number_format($s['tps'], 1) . '</span>' : '-')
+                . $cell($s['mspt'] !== null ? number_format($s['mspt'], 1) . ' ms' : '-')
+                . $cell($s['players'] ?? '-')
+                . $cell($memory)
+                . $cell($s['cpu'] !== null ? $s['cpu'] . '%' : '-')
+                . '</tr>';
+        }
+        foreach ($network->members->filter(fn (NetworkMember $m) => $m->role !== MemberRole::Shard) as $member) {
             $state = rescue(fn () => $member->server->retrieveStatus()->value, 'unknown', false);
-            $nodesInfo = '';
-            if ($member->role === MemberRole::Shard && $member->shard_name) {
-                $seen = $nodes['shards'][$member->shard_name] ?? null;
-                $nodesInfo = $seen
-                    ? e($seen['role']) . ', ' . $seen['players'] . ' online, seen ' . e($seen['seen']?->diffForHumans() ?? '?')
-                    : ($nodes['reachable'] ? 'not seen in Redis' : '');
-            }
-            $rows .= '<tr><td style="padding:4px 8px">' . e($member->server->name) . '</td>'
-                . '<td style="padding:4px 8px">' . e($member->role->getLabel()) . ($member->shard_name ? ' (' . e($member->shard_name) . ')' : '') . '</td>'
-                . '<td style="padding:4px 8px">' . e($state) . '</td>'
-                . '<td style="padding:4px 8px">' . $nodesInfo . '</td></tr>';
+            $rows .= '<tr>' . $cell('<b>' . e($member->role->getLabel()) . '</b><br><span style="opacity:.7">' . e($member->server->name) . '</span>') . $cell(e($state)) . str_repeat($cell(''), 6) . '</tr>';
         }
 
-        $configured = $network->leader()?->shard_name;
         if (!$nodes['reachable']) {
             $summary = '<p><b>Redis:</b> can\'t connect to ' . e($network->redis_host . ':' . $network->redis_port) . ' (' . e($nodes['error'] ?? '') . ')</p>';
         } else {
             $summary = '<p><b>Nodes leader:</b> ' . e($nodes['leader'] ?? 'none (no shard holds the lock)') . '</p>';
+            $configured = $network->leader()?->shard_name;
             if ($configured && $nodes['leader'] && $configured !== $nodes['leader']) {
                 $summary .= '<p style="color:#d97706">The leader set here is ' . e($configured) . ', but ' . e($nodes['leader']) . ' holds the lock (after a failover?). Mark ' . e($nodes['leader']) . ' as the leader below and push the config, so a restart keeps it.</p>';
             }
-            $unknown = array_diff(array_keys($nodes['shards']), $network->members->pluck('shard_name')->filter()->all());
-            if ($unknown !== []) {
-                $summary .= '<p>Also in Redis but not in this network: ' . e(implode(', ', $unknown)) . '</p>';
-            }
         }
-
         if ($rows === '') {
             return new HtmlString($summary . '<p>No servers in this network yet.</p>');
         }
+        $head = fn ($t) => '<th style="text-align:left;padding:4px 8px">' . $t . '</th>';
 
         return new HtmlString($summary . '<table style="width:100%;margin-top:8px"><thead><tr>'
-            . '<th style="text-align:left;padding:4px 8px">Server</th><th style="text-align:left;padding:4px 8px">Role</th>'
-            . '<th style="text-align:left;padding:4px 8px">State</th><th style="text-align:left;padding:4px 8px">Nodes</th>'
-            . '</tr></thead><tbody>' . $rows . '</tbody></table>');
+            . $head('Shard') . $head('State') . $head('Nodes') . $head('TPS') . $head('Tick') . $head('Players') . $head('Memory') . $head('CPU')
+            . '</tr></thead><tbody>' . $rows . '</tbody></table>'
+            . '<p style="margin-top:8px;opacity:.7">TPS and tick time come from Nodes (it needs a version that reports them). 20 TPS is full speed; a tick over 50 ms means the shard can\'t keep up.</p>');
     }
 
     private function velocityHtml(): HtmlString

@@ -16,6 +16,7 @@ use Ginjer\Network\Enums\MemberRole;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\CreateNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\EditNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\ListNetworks;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPluginsPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\RelationManagers\MembersRelationManager;
 use Ginjer\Network\Models\Network;
 use Ginjer\Network\Services\RegionList;
@@ -172,6 +173,49 @@ class NetworkResource extends Resource
                             ->alphaDash()
                             ->default('nodes'),
                     ]),
+                Section::make('Health checks')
+                    ->description('Checked every minute. Alerts go to every root admin\'s notifications.')
+                    ->columns(4)
+                    ->collapsible()
+                    ->schema([
+                        \Filament\Forms\Components\Toggle::make('health_alerts')
+                            ->label('Send alerts')
+                            ->helperText('When a shard goes down, stops syncing with Nodes, or lags.')
+                            ->default(true)
+                            ->inline(false),
+                        TextInput::make('lag_tps')
+                            ->label('Lagging below (TPS)')
+                            ->numeric()->integer()->minValue(1)->maxValue(20)
+                            ->default(15)
+                            ->required(),
+                        TextInput::make('lag_minutes')
+                            ->label('For (minutes)')
+                            ->numeric()->integer()->minValue(1)
+                            ->default(5)
+                            ->required(),
+                        \Filament\Forms\Components\Toggle::make('restart_on_lag')
+                            ->label('Restart lagging shards')
+                            ->helperText('Off by default: a restart disconnects that shard\'s players.')
+                            ->inline(false),
+                    ]),
+                Section::make('Backups')
+                    ->description('Backs up every server in the network at the same moment, after saving Nodes, the worlds and Redis, so a restore never mixes times.')
+                    ->columns(2)
+                    ->collapsible()
+                    ->schema([
+                        TextInput::make('backup_every_hours')
+                            ->label('Back up every (hours)')
+                            ->numeric()->integer()->minValue(1)
+                            ->placeholder('Only when you click Back up')
+                            ->helperText('Leave empty for manual backups only.'),
+                        TextInput::make('backup_keep')
+                            ->label('Keep the last')
+                            ->numeric()->integer()->minValue(1)
+                            ->suffix('network backups')
+                            ->default(5)
+                            ->required()
+                            ->helperText('Older ones are deleted, including their server backups.'),
+                    ]),
             ]);
     }
 
@@ -188,6 +232,7 @@ class NetworkResource extends Resource
             'index' => ListNetworks::route('/'),
             'create' => CreateNetwork::route('/create'),
             'edit' => EditNetwork::route('/{record}/edit'),
+            'plugins' => NetworkPluginsPage::route('/{record}/plugins'),
         ];
     }
 }
