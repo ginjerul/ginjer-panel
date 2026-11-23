@@ -19,6 +19,10 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 - **Status:** for each shard, its state, Nodes role, TPS and time per tick, players, memory and CPU. It also shows the shard that holds the Nodes leader lock in Redis, and warns when that isn't the leader set in the panel (after a failover). TPS and tick time need a Nodes version that reports them.
 - **Health checks:** every minute, root admins get a notification when a shard goes down, stops syncing with Nodes, or stays below a TPS threshold for a few minutes, plus one when it recovers. A lagging shard can optionally be restarted. Planned restarts (updates, backups) don't raise alarms. Set it up under **Health checks** on the network.
 - **Update shards:** downloads the newest Reef (Reef's `dev-main` release by default), Nodes and GinjerMap (a release of your Nodes repository; a private one needs a GitHub token, stored encrypted) once. It uploads them to every shard, then restarts the shards one at a time, followers first and the leader last, waiting for each to come back. Every upload finishes before anything restarts, and a shard that doesn't come back stops the rollout. **Power → Rolling restart** does the same without updating.
+- **History:** a week of each shard's TPS, tick time, players, memory and CPU, recorded every minute, as charts. When a shard sits at its memory limit while lagging for most of an hour, it suggests more RAM and applies it in one click. Java fills its memory even when healthy, so memory alone never triggers it.
+- **Lag alerts with a profile:** when a shard starts lagging and has spark installed, a 60-second profile is recorded automatically and its link sent with the alert.
+- **Daily rolling restart:** pick a time under **Health checks and restarts**. Players are warned 10, 5 and 1 minutes before, then the shards restart one at a time.
+- **Clear ground items on every shard** (Power menu): removes items, stuck arrows and XP on all shards after a 30-second warning. Handy after a war.
 - **Plugins:** switch a plugin on or off on every shard at once. It shows shards that disagree, or are missing a jar.
 - **Backups:** saves Nodes and the worlds and snapshots Redis, then backs up every server at the same moment as one network backup. Restore puts every server back to that moment. It keeps the last few network backups and can run every few hours.
 - **Promote now:** runs `nda shards promote` on a follower when the leader is down.
@@ -100,6 +104,12 @@ The setting names and defaults were checked against the source of Paper 1.21.11 
 Both install the plugin from Modrinth the first time; restart the server so it loads, then use them.
 
 ![The Tools menu on the Performance page](docs/screenshots/network-tools.png)
+
+### Lag hotspots
+
+**Scan now** asks Reef (`/reef entities`) for the chunks with the most entities and block entities, and lists them worst first. Each chunk comes with its coordinates (click to copy a `/tp`), the Nodes town and nation that own it, and what's in it, for example "zombie ×270, item ×30" or "hopper ×150". Mob farms, item piles and hopper chains are the usual causes. **Clear** removes ground items, stuck arrows or experience orbs after a 30-second warning; mobs are left to their owners. This page needs Reef.
+
+**Tools → Pre-generation progress** estimates how much of an area Chunky has generated, from the world's region files.
 
 ### Plugins
 
