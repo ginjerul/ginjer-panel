@@ -30,6 +30,25 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 
 The screenshots come from a test panel with sample data.
 
+### Split a server into shards
+
+**Ginjer → Networks → Split a server into shards** turns one server into a sharded network:
+
+1. **Pick** the server, the players you expect at peak, and optionally the number of shards (by default about 100 players each) and the nodes the new shards may use.
+2. **Plan.** It reads Nodes' `world.json` and `towns.json` from the server and splits the world into rectangles holding about the same number of players. Every claimed chunk counts, and more for towns with more residents. Each cut goes across the longer side, on a chunk border, and the outer regions reach the edge of the world, so no spot is left without a shard. RAM per shard is about 2 GB plus 48 MB per expected player, between 3 and 16 GB, with 1.5 GB extra for the leader. Each new shard goes on the chosen node with the most free memory and a free port. Without Nodes data, the area around spawn is split evenly.
+3. **Review** the shards, their areas, players, RAM, node and address. Rename them or change their RAM, then choose the Redis and proxy servers if you have them.
+4. **Split.** In the background, it creates a copy of the server for each new shard (same egg, startup and variables, RAM as planned). It packs the original's files (not the Nether, End, logs or cache), and every new shard downloads and unpacks them through a signed link, so this also works across nodes. Then it gives the original its planned RAM, creates the network and pushes the Reef and Nodes settings. The result appears in your notifications.
+
+The original server must be stopped while it's copied. It becomes the Nodes leader and keeps the area around spawn, plus the Nether and the End.
+
+If a node's address is a private IP, Wings refuses to download from it. Add that address under `api.remote_download.allowlist` in the Wings `config.yml` of the nodes that get new shards.
+
+| Pick a server | The plan |
+|---|---|
+| ![Step 1: the server, players at peak, shard count and nodes](docs/screenshots/split-server.png) | ![Step 2: three shards balanced from 246 residents in 38 towns, with RAM and ports](docs/screenshots/split-plan.png) |
+
+![The notification when the split is done](docs/screenshots/split-done.png)
+
 ### Install
 
 1. Download this repository as a zip, then upload the `plugins/ginjer-network` folder as a zip in **Admin → Plugins → Import**, or copy the folder into the panel's `plugins/` directory.
@@ -75,11 +94,18 @@ The region checks and the Nodes config editor run without a panel:
 php plugins/ginjer-network/tests/services-test.php <panel>/vendor/autoload.php [path/to/nodes/config.yml]
 ```
 
-The end-to-end test runs inside a real panel with the plugin installed, with Wings faked. It creates a node, servers and a network inside a database transaction and rolls everything back at the end:
+The split maths (coverage, balance, chunk borders, RAM rules) runs without a panel too:
+
+```bash
+php plugins/ginjer-network/tests/split-test.php <vendor/autoload.php> [world.json towns.json]
+```
+
+The end-to-end tests run inside a real panel with the plugin installed, with Wings faked. It creates a node, servers and a network inside a database transaction and rolls everything back at the end:
 
 ```bash
 cd <panel>
 php plugins/ginjer-network/tests/panel-test.php [path/to/nodes/config.yml]
+GINJER_EGG=<repo>/eggs/egg-reef-shard.yaml php plugins/ginjer-network/tests/split-panel-test.php <world.json> <towns.json>
 ```
 
 ## License
