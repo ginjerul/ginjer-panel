@@ -1,0 +1,64 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    env:
+      # the Pelican version the plugin is tested against; bump it to test a newer panel
+      PELICAN_REF: 45bfb805d1e7108856560e0c152d832845571362
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: sqlite3, pdo_sqlite, intl, zip, bcmath, gd, redis
+          tools: composer
+
+      - name: Syntax check
+        run: find plugins -name '*.php' -print0 | xargs -0 -n1 php -l > /dev/null
+
+      - name: Egg is valid YAML with a valid install script
+        run: |
+          python3 -c "import yaml; e = yaml.safe_load(open('eggs/egg-reef-shard.yaml')); open('/tmp/install.sh','w').write(e['scripts']['installation']['script'])"
+          bash -n /tmp/install.sh
+
+      - name: Install Pelican
+        run: |
+          git clone https://github.com/pelican-dev/panel.git panel
+          cd panel
+          git checkout "$PELICAN_REF"
+          composer install --no-interaction --no-progress --prefer-dist --no-dev
+          cp .env.example .env
+          sed -i 's/^APP_ENV=.*/APP_ENV=local/; s/^APP_INSTALLED=.*/APP_INSTALLED=true/' .env
+          printf 'DB_CONNECTION=sqlite\nDB_DATABASE=%s/database.sqlite\nCACHE_STORE=file\nSESSION_DRIVER=file\nQUEUE_CONNECTION=sync\n' "$PWD" >> .env
+          touch database.sqlite
+          php artisan key:generate --force
+          php artisan migrate --force --seed
+
+      - name: Install the plugin
+        run: |
+          cp -r plugins/ginjer-network panel/plugins/
+          cd panel
+          php artisan p:plugin:install ginjer-network
+          php artisan p:plugin:list | grep -q 'enabled'
+
+      - name: Standalone tests
+        run: |
+          A=panel/vendor/autoload.php
+          F=plugins/ginjer-network/tests/fixtures
+          php plugins/ginjer-network/tests/services-test.php $A
+          php plugins/ginjer-network/tests/split-test.php $A $F/nodes-world.json $F/nodes-towns.json
+          php plugins/ginjer-network/tests/optimizer-test.php $A
+
+      - name: Panel tests
+        working-directory: panel
+        run: |
+          F=plugins/ginjer-network/tests/fixtures
+          php plugins/ginjer-network/tests/panel-test.php
+          GINJER_EGG=$GITHUB_WORKSPACE/eggs/egg-reef-shard.yaml php plugins/ginjer-network/tests/split-panel-test.php $F/nodes-world.json $F/nodes-towns.json

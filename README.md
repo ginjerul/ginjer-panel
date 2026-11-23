@@ -113,6 +113,8 @@ Each time a shard starts, Pelican sets the shard's port, `online-mode=false` and
 
 ## Tests
 
+Every push runs all of the tests below on GitHub Actions (`.github/workflows/tests.yml`), inside a real Pelican install. `tests/fixtures/nodes-world.json` and `nodes-towns.json` are a made-up Nodes world (12 towns) for the split tests.
+
 The region checks and the Nodes config editor run without a panel:
 
 ```bash
