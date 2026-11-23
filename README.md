@@ -20,6 +20,16 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 - **Promote now:** runs `nda shards promote` on a follower when the leader is down.
 - **Velocity servers:** the `[servers]` lines for the proxy's `velocity.toml`.
 
+![The servers in a network: proxy, Redis and three Reef shards, with the Nodes leader marked](docs/screenshots/servers.png)
+
+| Status | Power |
+|---|---|
+| ![Status: the Nodes leader and each shard's role and players, read from Redis](docs/screenshots/status.png) | ![Power menu: start, restart, stop or kill the network](docs/screenshots/power.png) |
+| **Push config to shards** | **Velocity servers** |
+| ![Push result: two shards updated, one skipped because it has never started](docs/screenshots/push.png) | ![The velocity.toml lines for the shards](docs/screenshots/velocity.png) |
+
+The screenshots come from a test panel with sample data.
+
 ### Install
 
 1. Download this repository as a zip, then upload the `plugins/ginjer-network` folder as a zip in **Admin → Plugins → Import**, or copy the folder into the panel's `plugins/` directory.
@@ -51,7 +61,7 @@ See Reef's `SHARDING.md` and Nodes' `SHARDING-DESIGN.md` for what sharding does 
 
 The installer downloads:
 
-- **Reef** from `REEF_JAR_URL`, if set. Reef doesn't publish releases yet, so you can also leave this empty and upload the paperclip jar from Reef's Actions as `server.jar`.
+- **Reef** from `REEF_JAR_URL`. The default is the newest `main` build, from Reef's `dev-main` release. Leave it empty to upload your own jar as `server.jar`.
 - **Nodes and GinjerMap** (`nodes.jar`, `ginjermap.jar`) from a release of `NODES_REPO`. The default is `dev-master` of `ginjerul/ginjer-nodes`. A private repository needs `GITHUB_TOKEN`, a fine-grained token with read access to that repository's contents.
 - **The Kotlin runtime** Nodes needs, from `KOTLIN_RUNTIME_URL`, if set.
 

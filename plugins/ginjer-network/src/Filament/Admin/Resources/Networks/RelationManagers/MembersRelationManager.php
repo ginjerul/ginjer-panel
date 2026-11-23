@@ -89,15 +89,24 @@ class MembersRelationManager extends RelationManager
                     ->label('Leader')
                     ->boolean()
                     ->trueIcon('tabler-crown')
-                    ->falseIcon('tabler-point'),
+                    ->falseIcon('tabler-point')
+                    ->trueColor('warning')
+                    ->falseColor('gray'),
                 TextColumn::make('state')
                     ->label('State')
                     ->state(fn (NetworkMember $member) => rescue(fn () => $member->server->retrieveStatus()->value, 'unknown', false))
-                    ->badge(),
+                    ->badge()
+                    ->color(fn (string $state) => match ($state) {
+                        'running' => 'success',
+                        'starting', 'stopping' => 'warning',
+                        'missing', 'unknown' => 'danger',
+                        default => 'gray',
+                    }),
             ])
             ->recordActions([
                 Action::make('make_leader')
                     ->label('Make leader')
+                    ->tooltip('Make leader')
                     ->icon('tabler-crown')
                     ->color('warning')
                     ->visible(fn (NetworkMember $member) => $member->role === MemberRole::Shard && !$member->nodes_leader)
@@ -106,6 +115,7 @@ class MembersRelationManager extends RelationManager
                     ->action(fn (NetworkMember $member) => $member->update(['nodes_leader' => true])),
                 Action::make('promote')
                     ->label('Promote now')
+                    ->tooltip('Promote now (leader is down)')
                     ->icon('tabler-arrow-big-up-lines')
                     ->color('danger')
                     ->visible(fn (NetworkMember $member) => $member->role === MemberRole::Shard && !$member->nodes_leader)
@@ -121,7 +131,7 @@ class MembersRelationManager extends RelationManager
                         }
                     }),
                 EditAction::make(),
-                DeleteAction::make()->label('Remove'),
+                DeleteAction::make()->label('Remove')->tooltip('Remove from network'),
             ])
             ->headerActions([
                 CreateAction::make()

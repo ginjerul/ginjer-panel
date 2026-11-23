@@ -114,9 +114,9 @@ variables:
       - 'regex:/^([\w\d._-]+)(\.jar)$/'
     sort: 1
   - name: 'Reef Jar URL'
-    description: 'Where to download the Reef paperclip jar from. Leave empty to upload it yourself.'
+    description: 'Where to download the Reef paperclip jar from (default: the newest main build). Leave empty to upload it yourself.'
     env_variable: REEF_JAR_URL
-    default_value: ''
+    default_value: 'https://github.com/ginjerul/reef/releases/download/dev-main/reef.jar'
     user_viewable: true
     user_editable: true
     rules:

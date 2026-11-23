@@ -53,7 +53,7 @@ class ShardConfigService
     }
 
     /**
-     * @return list<array{server: string, ok: bool, message: string}>
+     * @return list<array{server: string, ok: bool, complete: bool, message: string}>
      */
     public function push(Network $network): array
     {
@@ -62,9 +62,9 @@ class ShardConfigService
             $name = $shard->server->name;
             try {
                 $notes = array_merge($this->writeReef($network, $shard), $this->writeNodes($network, $shard));
-                $results[] = ['server' => $name, 'ok' => true, 'message' => $notes === [] ? 'Updated. Restart it to apply.' : implode(' ', $notes)];
+                $results[] = ['server' => $name, 'ok' => true, 'complete' => $notes === [], 'message' => $notes === [] ? 'Updated. Restart it to apply.' : implode(' ', $notes)];
             } catch (Throwable $exception) {
-                $results[] = ['server' => $name, 'ok' => false, 'message' => $exception->getMessage()];
+                $results[] = ['server' => $name, 'ok' => false, 'complete' => false, 'message' => $exception->getMessage()];
             }
         }
 

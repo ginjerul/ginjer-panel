@@ -29,6 +29,7 @@ class EditNetwork extends EditRecord
         return [
             Action::make('status')
                 ->label('Status')
+                ->tooltip('Status')
                 ->icon('tabler-heartbeat')
                 ->color('gray')
                 ->modalHeading(fn () => $this->getRecord()->name . ' status')
@@ -49,6 +50,7 @@ class EditNetwork extends EditRecord
 
             Action::make('push_config')
                 ->label('Push config to shards')
+                ->tooltip('Push config to shards')
                 ->icon('tabler-upload')
                 ->requiresConfirmation()
                 ->modalDescription('Writes the regions, shard names and Redis settings into reef.yml and plugins/nodes/config.yml on every shard. Shards use them after their next restart.')
@@ -67,18 +69,25 @@ class EditNetwork extends EditRecord
                         return;
                     }
 
-                    $results = $service->push($network);
-                    $failed = collect($results)->where('ok', false)->count();
+                    $results = collect($service->push($network));
+                    $total = $results->count();
+                    $failed = $results->where('ok', false)->count();
+                    $done = $results->where('complete', true)->count();
                     Notification::make()
-                        ->title($failed === 0 ? 'Config pushed to ' . count($results) . ' shard(s)' : "$failed of " . count($results) . ' shard(s) failed')
-                        ->body(new HtmlString('<ul>' . collect($results)->map(fn ($r) => '<li><b>' . e($r['server']) . ':</b> ' . e($r['message']) . '</li>')->implode('') . '</ul>'))
-                        ->color($failed === 0 ? 'success' : 'danger')
+                        ->title(match (true) {
+                            $failed > 0 => "$failed of $total shard(s) failed",
+                            $done < $total => "Config pushed to $done of $total shard(s)",
+                            default => "Config pushed to all $total shard(s)",
+                        })
+                        ->body(new HtmlString('<ul>' . $results->map(fn ($r) => '<li><b>' . e($r['server']) . ':</b> ' . e($r['message']) . '</li>')->implode('') . '</ul>'))
+                        ->color($failed > 0 ? 'danger' : ($done < $total ? 'warning' : 'success'))
                         ->persistent()
                         ->send();
                 }),
 
             Action::make('velocity')
                 ->label('Velocity servers')
+                ->tooltip('Velocity servers')
                 ->icon('tabler-route')
                 ->color('gray')
                 ->modalHeading('Shards for velocity.toml')
@@ -93,7 +102,9 @@ class EditNetwork extends EditRecord
 
     private function powerAction(string $action, string $label, string $icon, string $color): Action
     {
-        return Action::make("power_$action")
+        // "exclude_" keeps the label: Pelican otherwise shows actions as bare icons, which is too
+        // easy to misread in a menu that can kill every server
+        return Action::make("exclude_power_$action")
             ->label($label)
             ->icon($icon)
             ->color($color)

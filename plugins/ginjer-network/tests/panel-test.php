@@ -178,6 +178,7 @@ try {
     $byServer = collect($results)->keyBy('server');
     check('push reports both shards', $byServer->count() === 2, json_encode($results));
     check('push skips a shard without reef.yml with a hint', str_contains($byServer['gn-east']['message'] ?? '', 'start this shard once'), json_encode($results));
+    check('a skipped shard is not marked complete', ($byServer['gn-east']['complete'] ?? null) === false && ($byServer['gn-west']['complete'] ?? null) === true);
 
     $file = fn (Server $s, string $name) => collect($written)->first(fn ($body, $url) => str_contains($url, $s->uuid) && str_contains(urldecode($url), "file=$name"));
     $westReef = Yaml::parse($file($west, 'reef.yml') ?? '');
@@ -214,7 +215,7 @@ try {
     check('resource url resolves', str_contains(NetworkResource::getUrl('edit', ['record' => $network]), '/networks/'));
 
     Queue::fake();
-    $edit->call('mountAction', 'power_start');
+    $edit->call('mountAction', 'exclude_power_start');
     $edit->call('callMountedAction');
     check('start button queues 4 power jobs', count(Queue::pushed(SendPowerAction::class)) === 4);
 } catch (Throwable $exception) {
