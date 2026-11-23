@@ -143,15 +143,37 @@ class SplitServerAction
                                     ->unique('ginjer_networks', 'name'),
                                 Select::make('redis_server_id')
                                     ->label('Redis server')
-                                    ->placeholder('Add later')
+                                    ->placeholder('None yet')
+                                    ->live()
                                     ->options(fn () => self::freeServers()),
                                 Select::make('proxy_server_id')
                                     ->label('Velocity proxy')
-                                    ->placeholder('Add later')
+                                    ->placeholder('None yet')
+                                    ->live()
                                     ->options(fn () => self::freeServers()),
-                                TextInput::make('redis_host')->label('Redis host')->default('127.0.0.1')->required(),
-                                TextInput::make('redis_port')->label('Redis port')->numeric()->default(6379)->required(),
-                                TextInput::make('redis_password')->label('Redis password')->password()->revealable(),
+                                Html::make(''),
+                                Select::make('create_redis_egg_id')
+                                    ->label('Or create Redis from')
+                                    ->placeholder('Don\'t create one')
+                                    ->live()
+                                    ->options(fn () => self::eggs('redis'))
+                                    ->default(fn () => array_key_first(self::eggs('redis')))
+                                    ->helperText('512 MB, a generated password, on the original\'s node.')
+                                    ->visible(fn (Get $get) => blank($get('redis_server_id'))),
+                                Select::make('create_proxy_egg_id')
+                                    ->label('Or create the proxy from')
+                                    ->placeholder('Don\'t create one')
+                                    ->options(fn () => self::eggs('velocity'))
+                                    ->default(fn () => array_key_first(self::eggs('velocity')))
+                                    ->helperText('Started once and configured: server list, modern forwarding, the secret shared with the shards.')
+                                    ->visible(fn (Get $get) => blank($get('proxy_server_id'))),
+                                Html::make(''),
+                                TextInput::make('redis_host')->label('Redis host')->default('127.0.0.1')->required()
+                                    ->visible(fn (Get $get) => blank($get('create_redis_egg_id')) || filled($get('redis_server_id'))),
+                                TextInput::make('redis_port')->label('Redis port')->numeric()->default(6379)->required()
+                                    ->visible(fn (Get $get) => blank($get('create_redis_egg_id')) || filled($get('redis_server_id'))),
+                                TextInput::make('redis_password')->label('Redis password')->password()->revealable()
+                                    ->visible(fn (Get $get) => blank($get('create_redis_egg_id')) || filled($get('redis_server_id'))),
                             ]),
                         Callout::make('Stop the server before you start')
                             ->info()
@@ -183,11 +205,13 @@ class SplitServerAction
 
                 RunSplit::dispatch($plan, [
                     'name' => $data['network_name'],
-                    'redis_host' => $data['redis_host'],
-                    'redis_port' => $data['redis_port'],
+                    'redis_host' => $data['redis_host'] ?? '127.0.0.1',
+                    'redis_port' => $data['redis_port'] ?? 6379,
                     'redis_password' => $data['redis_password'] ?? null,
                     'redis_server_id' => $data['redis_server_id'] ?? null,
                     'proxy_server_id' => $data['proxy_server_id'] ?? null,
+                    'create_redis_egg_id' => blank($data['redis_server_id'] ?? null) ? ($data['create_redis_egg_id'] ?? null) : null,
+                    'create_proxy_egg_id' => blank($data['proxy_server_id'] ?? null) ? ($data['create_proxy_egg_id'] ?? null) : null,
                 ], (int) auth()->id());
 
                 Notification::make()
@@ -204,6 +228,12 @@ class SplitServerAction
         $plan = json_decode((string) $get('plan'), true);
 
         return is_array($plan) ? $plan : [];
+    }
+
+    /** @return array<int, string> eggs whose name contains $word */
+    private static function eggs(string $word): array
+    {
+        return \App\Models\Egg::query()->where('name', 'like', "%$word%")->orderBy('name')->pluck('name', 'id')->all();
     }
 
     /** @return array<int, string> */

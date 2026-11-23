@@ -75,9 +75,11 @@ try {
 
     // ---------------- fake Wings
     $calls = [];
-    $state = 'offline';
+    $state = 'offline';          // what the original server reports
+    $powered = [];               // uuid => state, for servers that were started or stopped
+    \Ginjer\Network\Services\Ops\ServerLifecycle::$sleep = fn (int $s) => null;
     $Wings = fn (Node $n) => ['User-Agent' => "Pelican Wings/v1.0.0 (id:{$n->daemon_token_id})"];
-    Http::fake(function (Request $request) use (&$calls, &$state, $worldJson, $townsJson, $nodesConfig, $reefConfig, $node, $Wings) {
+    Http::fake(function (Request $request) use (&$calls, &$state, &$powered, $worldJson, $townsJson, $nodesConfig, $reefConfig, $node, $Wings) {
         $url = $request->url();
         $path = parse_url($url, PHP_URL_PATH);
         parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
@@ -91,11 +93,18 @@ try {
                 'plugins/nodes/towns.json' => $ok($townsJson),
                 'reef.yml' => $ok($reefConfig),
                 'plugins/nodes/config.yml' => $ok($nodesConfig),
+                'velocity.toml' => $ok(file_get_contents(__DIR__ . '/fixtures/velocity.toml')),
+                'forwarding.secret' => $ok('velocity-secret-123'),
                 default => $ok(['error' => 'not found'], 404),
             },
             str_ends_with($path, '/files/list-directory') => $ok(array_map(fn ($n) => ['name' => $n], ['world', 'world_nether', 'world_the_end', 'plugins', 'logs', 'server.jar', 'reef.yml', 'server.properties', 'cache'])),
             str_ends_with($path, '/files/compress') => $ok(['name' => 'ginjer-split-test.tar.gz', 'size' => 123]),
-            preg_match('#^/api/servers/[0-9a-f-]{36}$#', $path) === 1 && $request->method() === 'GET' => $ok(['state' => $state]),
+            preg_match('#^/api/servers/([0-9a-f-]{36})/power$#', $path, $pm) === 1 => (function () use (&$powered, $pm, $request, $ok) {
+                $powered[$pm[1]] = in_array($request->data()['action'], ['start', 'restart'], true) ? 'running' : 'offline';
+
+                return $ok('', 204);
+            })(),
+            preg_match('#^/api/servers/([0-9a-f-]{36})$#', $path, $sm) === 1 && $request->method() === 'GET' => $ok(['state' => $powered[$sm[1]] ?? $state]),
             default => $ok('', 204),
         };
     });
@@ -110,6 +119,11 @@ try {
     $shards = collect($plan['shards']);
     check('plan: 300 players -> 3 shards', count($plan['shards']) === 3, json_encode($plan['shards']));
     check('plan: balanced by Nodes data', $plan['stats']['from_nodes'] && $plan['stats']['towns'] > 0);
+    $broken = $planner->plan($source->fresh(['node', 'allocation']), 300, 3, [$small->id]);
+    $before = Server::count();
+    app()->call([new RunSplit($broken, ['name' => 'Broken'], $user->id), 'handle']);
+    check('a plan with errors is refused by the job too', Server::count() === $before && DB::table('notifications')->where('notifiable_id', $user->id)->pluck('data')->contains(fn ($d) => str_contains($d, 'The plan has problems')));
+    DB::table('notifications')->where('notifiable_id', $user->id)->delete();
     check('plan: no errors, no warnings', $plan['errors'] === [] && $plan['warnings'] === [], json_encode([$plan['errors'], $plan['warnings']]));
     check('plan: exactly one source, and it is the leader', $shards->where('source', true)->count() === 1 && $shards->firstWhere('source', true)['leader'] === true);
     $src = $shards->firstWhere('source', true);
@@ -178,6 +192,46 @@ try {
         && collect($calls)->filter(fn ($c) => str_ends_with($c[1], '/files/delete'))->count() === 3);
     $writes = collect($calls)->filter(fn ($c) => str_ends_with($c[1], '/files/write'))->map(fn ($c) => $c[2]['file'] ?? '');
     check('config: reef.yml and Nodes config written on all 3 shards', $writes->filter(fn ($f) => $f === 'reef.yml')->count() === 3 && $writes->filter(fn ($f) => $f === 'plugins/nodes/config.yml')->count() === 3, $writes->toJson());
+
+    // ---------------- creating Redis and the proxy as well
+    $redisEgg = App\Models\Egg::forceCreate(['uuid' => Uuid::uuid4()->toString(), 'author' => 'test@example.com', 'docker_images' => ['r' => 'redis'], 'config_logs' => '{}',
+        'config_startup' => '{}', 'config_stop' => '{}', 'config_files' => '{}', 'name' => 'Redis-7', 'description' => 'test', 'startup_commands' => ['Default' => 'redis-server']]);
+    App\Models\EggVariable::forceCreate(['egg_id' => $redisEgg->id, 'name' => 'Password', 'description' => '', 'env_variable' => 'SERVER_PASSWORD', 'default_value' => 'P@55w0rd',
+        'user_viewable' => true, 'user_editable' => true, 'rules' => ['required', 'string'], 'sort' => 1]);
+    $velocityEgg = App\Models\Egg::forceCreate(['uuid' => Uuid::uuid4()->toString(), 'author' => 'test@example.com', 'docker_images' => ['j' => 'java'], 'config_logs' => '{}',
+        'config_startup' => '{}', 'config_stop' => '{}', 'config_files' => '{}', 'name' => 'Velocity', 'description' => 'test', 'startup_commands' => ['Default' => 'java -jar velocity.jar']]);
+    App\Models\EggVariable::forceCreate(['egg_id' => $velocityEgg->id, 'name' => 'User agent', 'description' => '', 'env_variable' => 'USER_AGENT', 'default_value' => '',
+        'user_viewable' => true, 'user_editable' => true, 'rules' => ['required'], 'sort' => 1]);
+    $source->forceFill(['memory' => 6144])->save();
+    Network::where('name', 'Split Net')->get()->each->delete(); // so the original can be split again
+    $node->forceFill(['memory' => 200000])->save();          // room next to the earlier runs' servers
+    foreach (range(25571, 25574) as $port) {
+        Allocation::forceCreate(['ip' => '0.0.0.0', 'port' => $port, 'node_id' => $node->id]);
+    }
+    $plan3 = $planner->plan($source->fresh(['node', 'allocation']), 300, null, [$node->id]);
+    $calls = [];
+    $powered = [];
+    app()->call([new RunSplit($plan3, ['name' => 'Full Net', 'create_redis_egg_id' => $redisEgg->id, 'create_proxy_egg_id' => $velocityEgg->id], $user->id), 'handle']);
+    $full = Network::with('members.server.allocation')->where('name', 'Full Net')->first();
+    $notes = DB::table('notifications')->where('notifiable_id', $user->id)->pluck('data');
+    check('full split: finished', $full !== null && $notes->contains(fn ($d) => str_contains($d, 'configured the proxy')), $notes->last());
+    if ($full) {
+        $redisMember = $full->members->firstWhere('role', MemberRole::Redis);
+        $proxyMember = $full->members->firstWhere('role', MemberRole::Proxy);
+        check('full split: Redis and the proxy are members', $redisMember !== null && $proxyMember !== null);
+        $password = DB::table('server_variables')->where('server_id', $redisMember?->server_id)->value('variable_value');
+        check('full split: Redis got a generated password, not the egg default', strlen((string) $password) === 32 && $password !== 'P@55w0rd' && $full->redis_password === $password);
+        $redisAllocation = $redisMember->server->allocation;
+        $expectedHost = in_array($redisAllocation->ip, ['0.0.0.0', '::'], true) ? '172.18.0.1' : $redisAllocation->ip;
+        check('full split: the network uses the new Redis (its address and port)', $full->redis_host === $expectedHost && $full->redis_port === $redisAllocation->port, json_encode([$full->redis_host, $redisAllocation->ip]));
+        check('full split: the proxy got a user agent (the Velocity egg needs one)', DB::table('server_variables')->where('server_id', $proxyMember?->server_id)->value('variable_value') === 'ginjer-network');
+        check('full split: Redis and the proxy were started, the shards were not', ($powered[$redisMember->server->uuid] ?? null) === 'running' && ($powered[$proxyMember->server->uuid] ?? null) === 'running'
+            && $full->members->where('role', MemberRole::Shard)->every(fn ($m) => !isset($powered[$m->server->uuid])));
+        $velocityWrite = collect($calls)->first(fn ($c) => str_ends_with($c[1], '/files/write') && ($c[2]['file'] ?? '') === 'velocity.toml' && str_contains($c[1], $proxyMember->server->uuid));
+        check('full split: the proxy\'s velocity.toml was written', $velocityWrite !== null);
+        $restarts = collect($calls)->filter(fn ($c) => str_contains($c[1], $proxyMember->server->uuid . '/power'))->pluck(3)->pluck('action')->all();
+        check('full split: the proxy was restarted to load it', $restarts === ['start', 'stop', 'start'], json_encode($restarts));
+    }
 } catch (Throwable $exception) {
     check('no exception', false, get_class($exception) . ': ' . $exception->getMessage() . ' @ ' . $exception->getFile() . ':' . $exception->getLine());
 } finally {
