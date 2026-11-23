@@ -43,6 +43,24 @@ class EditNetwork extends EditRecord
                 $this->powerAction('restart', 'Restart network', 'tabler-reload', 'warning'),
                 $this->powerAction('stop', 'Stop network', 'tabler-player-stop', 'danger'),
                 $this->powerAction('kill', 'Kill network', 'tabler-alert-triangle', 'danger'),
+                Action::make('exclude_clear_items')
+                    ->label('Clear ground items on every shard')
+                    ->icon('tabler-trash')
+                    ->color('gray')
+                    ->requiresConfirmation()
+                    ->modalDescription('Players get a 30-second warning, then Reef removes ground items, arrows and experience orbs on every running shard. Named items are kept. Handy after a war.')
+                    ->action(function () {
+                        $sent = 0;
+                        foreach ($this->getRecord()->load('members.server')->membersWithRole(MemberRole::Shard) as $shard) {
+                            try {
+                                $shard->server->send('reef clear all 30');
+                                $sent++;
+                            } catch (\Throwable) {
+                                // offline: nothing on the ground is ticking there anyway
+                            }
+                        }
+                        Notification::make()->title("Clearing on $sent shard(s) in 30 seconds")->body('Shards that are offline were skipped.')->success()->send();
+                    }),
                 Action::make('exclude_rolling_restart')
                     ->label('Rolling restart')
                     ->icon('tabler-refresh-dot')
@@ -137,6 +155,13 @@ class EditNetwork extends EditRecord
                 ->icon('tabler-plug')
                 ->color('gray')
                 ->url(fn () => NetworkResource::getUrl('plugins', ['record' => $this->getRecord()])),
+
+            Action::make('history')
+                ->label('History')
+                ->tooltip('A week of TPS, players and memory')
+                ->icon('tabler-chart-line')
+                ->color('gray')
+                ->url(fn () => NetworkResource::getUrl('history', ['record' => $this->getRecord()])),
 
             Action::make('backups')
                 ->label('Backups')

@@ -50,10 +50,41 @@ class NetworkHealth
         return $out;
     }
 
+    /**
+     * Stores this minute's numbers for the History page and drops what's older than a week.
+     *
+     * @param  array<string, array<string, mixed>>  $shards
+     */
+    private function record(Network $network, array $shards): void
+    {
+        $now = now()->startOfMinute();
+        foreach ($shards as $name => $s) {
+            \Ginjer\Network\Models\ShardMetric::create([
+                'network_id' => $network->id, 'shard' => $name, 'recorded_at' => $now,
+                'tps' => $s['tps'], 'mspt' => $s['mspt'], 'players' => $s['players'],
+                'memory_mb' => $s['memory_mb'], 'memory_limit_mb' => $s['memory_limit_mb'], 'cpu' => $s['cpu'],
+            ]);
+        }
+        \Ginjer\Network\Models\ShardMetric::where('network_id', $network->id)->where('recorded_at', '<', now()->subDays(\Ginjer\Network\Models\ShardMetric::KEEP_DAYS))->delete();
+    }
+
+    /** Starts a 60-second spark profile; the link goes to every root admin. */
+    private function profile(\App\Models\Server $server): void
+    {
+        $tools = app(\Ginjer\Network\Services\Ops\ServerTools::class);
+        if ($tools->findPlugin($server, \Ginjer\Network\Services\Ops\ServerTools::SPARK) === null) {
+            return;
+        }
+        $previous = rescue(fn () => $tools->sparkLink($server), null, false);
+        $server->send('spark profiler start --timeout 60');
+        \Ginjer\Network\Jobs\ProfileWithSpark::dispatch($server->id, null, 60, $previous);
+    }
+
     /** One check: alerts root admins about changes and restarts lagging shards if the network says so. */
     public function check(Network $network): array
     {
         $shards = $this->shards($network);
+        $this->record($network, $shards);
         $key = "ginjer-network:health:{$network->id}";
         $result = HealthRules::evaluate(
             array_map(fn ($s) => ['state' => $s['state'], 'reporting' => $s['reporting'], 'tps' => $s['tps'], 'mspt' => $s['mspt']], $shards),
@@ -74,6 +105,13 @@ class NetworkHealth
                         ->actions([Action::make('open')->label('Open network')->url(NetworkResource::getUrl('edit', ['record' => $network], panel: 'admin'))])
                         ->sendToDatabase($admin), report: false);
                 }
+            }
+        }
+        // catch the lag while it's happening: profile with spark if it's installed
+        foreach ($result['lagging'] as $name) {
+            $member = $network->members->firstWhere('shard_name', $name);
+            if ($member) {
+                rescue(fn () => $this->profile($member->server), report: false);
             }
         }
         foreach ($result['restart'] as $name) {

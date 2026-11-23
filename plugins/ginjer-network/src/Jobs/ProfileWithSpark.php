@@ -21,12 +21,15 @@ class ProfileWithSpark implements ShouldQueue
 
     public int $timeout = 300;
 
-    public function __construct(public int $serverId, public int $userId, public int $seconds, public ?string $previousLink) {}
+    /** @param  ?int  $userId  who gets the link; null: every root admin (automatic profiles) */
+    public function __construct(public int $serverId, public ?int $userId, public int $seconds, public ?string $previousLink) {}
 
     public function handle(ServerTools $tools): void
     {
         $server = Server::findOrFail($this->serverId);
-        $user = User::findOrFail($this->userId);
+        $users = $this->userId
+            ? User::whereKey($this->userId)->get()
+            : User::query()->whereHas('roles', fn ($q) => $q->where('name', \App\Models\Role::ROOT_ADMIN))->get();
         ServerLifecycle::sleep($this->seconds + 10);
 
         $link = null;
@@ -43,13 +46,13 @@ class ProfileWithSpark implements ShouldQueue
                 ->body('It shows what the server spent its time on during those ' . $this->seconds . ' seconds.')
                 ->success()
                 ->actions([Action::make('open')->label('Open the profile')->url($link, shouldOpenInNewTab: true)])
-                ->sendToDatabase($user);
+                ->sendToDatabase($users);
         } else {
             Notification::make()
                 ->title("No spark profile link from {$server->name}")
                 ->body('spark didn\'t write a link to the log. Check the console: the profile may still be uploading, or spark may have failed to start.')
                 ->warning()
-                ->sendToDatabase($user);
+                ->sendToDatabase($users);
         }
     }
 }

@@ -17,6 +17,7 @@ use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\CreateNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\EditNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\ListNetworks;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkBackupsPage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkHistoryPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPluginsPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\RelationManagers\MembersRelationManager;
 use Ginjer\Network\Models\Network;
@@ -174,9 +175,9 @@ class NetworkResource extends Resource
                             ->alphaDash()
                             ->default('nodes'),
                     ]),
-                Section::make('Health checks')
+                Section::make('Health checks and restarts')
                     ->description('Checked every minute. Alerts go to every root admin\'s notifications.')
-                    ->columns(4)
+                    ->columns(5)
                     ->collapsible()
                     ->schema([
                         \Filament\Forms\Components\Toggle::make('health_alerts')
@@ -194,6 +195,11 @@ class NetworkResource extends Resource
                             ->numeric()->integer()->minValue(1)
                             ->default(5)
                             ->required(),
+                        TextInput::make('restart_daily_at')
+                            ->label('Daily rolling restart at')
+                            ->placeholder('Off')
+                            ->regex('/^([01]\d|2[0-3]):[0-5]\d$/')
+                            ->helperText(fn () => 'HH:MM, ' . config('app.timezone') . ' time. Players are warned 10, 5 and 1 minutes before; shards restart one at a time.'),
                         \Filament\Forms\Components\Toggle::make('restart_on_lag')
                             ->label('Restart lagging shards')
                             ->helperText('Off by default: a restart disconnects that shard\'s players.')
@@ -235,6 +241,7 @@ class NetworkResource extends Resource
             'edit' => EditNetwork::route('/{record}/edit'),
             'plugins' => NetworkPluginsPage::route('/{record}/plugins'),
             'backups' => NetworkBackupsPage::route('/{record}/backups'),
+            'history' => NetworkHistoryPage::route('/{record}/history'),
         ];
     }
 }

@@ -46,5 +46,60 @@ $cmds = ServerTools::chunkyCommands('world', ['min-x' => -5000, 'min-z' => -5000
 check('Chunky: world, rectangle, centre, radii, start', $cmds === ['chunky world world', 'chunky shape rectangle', 'chunky center -1164 0', 'chunky radius 3836 5000', 'chunky start'], json_encode($cmds));
 check('Chunky: a square around 0, 0', ServerTools::chunkyCommands('world_nether', ServerTools::area(null, null, 3000))[2] === 'chunky center 0 0');
 
+// ---------------- daily restart timing
+use Carbon\Carbon;
+use Ginjer\Network\Services\Ops\RestartSchedule;
+
+$at = fn (string $time) => Carbon::parse("2026-11-23 $time");
+$plan = [];
+foreach (['03:49', '03:50', '03:51', '03:55', '03:58', '03:59', '04:00', '04:01'] as $t) {
+    $plan[$t] = RestartSchedule::due('04:00', $at($t), null);
+}
+check('restart: warnings at 10, 5 and 1 minutes, then the restart', $plan === [
+    '03:49' => null, '03:50' => ['warn', 10], '03:51' => null, '03:55' => ['warn', 5], '03:58' => null,
+    '03:59' => ['warn', 1], '04:00' => ['restart', 0], '04:01' => ['restart', 0]], json_encode($plan));
+check('restart: only once a day', RestartSchedule::due('04:00', $at('04:01'), Carbon::parse('2026-11-23 04:00')) === null);
+check('restart: again the next day', RestartSchedule::due('04:00', Carbon::parse('2026-11-24 04:00'), Carbon::parse('2026-11-23 04:00')) === ['restart', 0]);
+check('restart: not hours later if the panel was down', RestartSchedule::due('04:00', $at('09:00'), null) === null);
+check('restart: off, or a bad time, does nothing', RestartSchedule::due(null, $at('04:00'), null) === null && RestartSchedule::due('25:00', $at('04:00'), null) === null);
+check('restart: just after midnight', RestartSchedule::due('00:05', Carbon::parse('2026-11-23 23:55'), null) === null && RestartSchedule::due('00:05', Carbon::parse('2026-11-24 00:00'), null) === ['warn', 5]);
+
+// ---------------- lag hotspots
+use Ginjer\Network\Services\Ops\Hotspots;
+
+$world = json_encode(['territories' => ['7' => ['chunks' => [10, -3, 11, -3]], '8' => ['chunks' => [0, 0]]]]);
+$towns = json_encode(['towns' => ['Ironforge' => ['territories' => [7], 'annexed' => []], 'Lonely' => ['territories' => [], 'annexed' => [8]]],
+    'nations' => ['Dwarves' => ['towns' => ['Ironforge']]]]);
+$owners = Hotspots::owners($world, $towns);
+check('hotspots: chunks map to their town and nation', ($owners['10,-3'] ?? null) === ['Ironforge', 'Dwarves'] && ($owners['11,-3'] ?? null) === ['Ironforge', 'Dwarves']);
+check('hotspots: annexed land counts, a town without a nation has none', ($owners['0,0'] ?? null) === ['Lonely', null]);
+check('hotspots: no Nodes data, no owners', Hotspots::owners(null, $towns) === []);
+
+$report = json_encode(['generated' => 1764000000000, 'totals' => ['minecraft:item' => 50, 'minecraft:zombie' => 300], 'chunks' => [
+    ['world' => 'world', 'x' => 3, 'z' => 3, 'entities' => 20, 'types' => ['minecraft:item' => 20], 'block_entities' => 5, 'block_types' => ['minecraft:chest' => 5]],
+    ['world' => 'world', 'x' => 10, 'z' => -3, 'entities' => 300, 'types' => ['minecraft:item' => 30, 'minecraft:zombie' => 270], 'block_entities' => 150, 'block_types' => ['minecraft:hopper' => 150]],
+]]);
+$parsed = Hotspots::parse($report, $owners);
+check('hotspots: worst chunk first (entities + block entities)', $parsed['chunks'][0]['x'] === 10 && $parsed['chunks'][0]['load'] === 450);
+check('hotspots: block coordinates at the chunk centre, with the owner', $parsed['chunks'][0]['block_x'] === 168 && $parsed['chunks'][0]['block_z'] === -40 && $parsed['chunks'][0]['town'] === 'Ironforge');
+check('hotspots: types sorted, biggest first', array_key_first($parsed['chunks'][0]['types']) === 'minecraft:zombie' && array_key_first($parsed['totals']) === 'minecraft:zombie');
+check('hotspots: wilderness has no town', $parsed['chunks'][1]['town'] === null);
+check('hotspots: short summary', Hotspots::summary(['minecraft:zombie' => 270, 'minecraft:item' => 30, 'minecraft:arrow' => 3, 'minecraft:cow' => 1]) === 'zombie ×270, item ×30, arrow ×3, +1 more');
+try {
+    Hotspots::parse('not json');
+    check('hotspots: a broken report is an error, not an empty list', false);
+} catch (InvalidArgumentException) {
+    check('hotspots: a broken report is an error, not an empty list', true);
+}
+
+// ---------------- pre-generation progress
+$area = ['min-x' => -1024, 'min-z' => -1024, 'max-x' => 1024, 'max-z' => 1024]; // regions -2..1 each way: 16
+$p = Hotspots::pregenProgress(['r.-2.-2.mca', 'r.-1.-1.mca', 'r.0.0.mca', 'r.1.1.mca', 'r.5.5.mca', 'level.dat', 'r.0.0.mca.tmp'], $area);
+check('pregen: counts only region files inside the area', $p === ['have' => 4, 'need' => 16, 'percent' => 25], json_encode($p));
+$q = Hotspots::pregenProgress([], ['min-x' => 0, 'min-z' => 0, 'max-x' => 100, 'max-z' => 100]);
+check('pregen: a small area is one region file', $q['need'] === 1 && $q['percent'] === 0);
+$edge = Hotspots::pregenProgress(['r.-1.0.mca', 'r.0.0.mca'], ['min-x' => -512, 'min-z' => 0, 'max-x' => 512, 'max-z' => 512]);
+check('pregen: region borders at multiples of 512 (negatives included)', $edge === ['have' => 2, 'need' => 2, 'percent' => 100], json_encode($edge));
+
 echo $failures === 0 ? "\nAll checks passed\n" : "\n$failures check(s) failed\n";
 exit($failures === 0 ? 0 : 1);

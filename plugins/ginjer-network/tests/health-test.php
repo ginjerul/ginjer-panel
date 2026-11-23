@@ -7,8 +7,10 @@
  */
 
 require __DIR__ . '/../src/Services/Health/HealthRules.php';
+require __DIR__ . '/../src/Services/Health/MemoryAdvice.php';
 
 use Ginjer\Network\Services\Health\HealthRules;
+use Ginjer\Network\Services\Health\MemoryAdvice;
 
 $failures = 0;
 function check(string $name, bool $ok, string $detail = ''): void
@@ -73,6 +75,26 @@ $both = HealthRules::evaluate(['west' => $down, 'east' => $ok], ['west' => ['run
 check('shards are judged separately', count($both['alerts']) === 1 && str_contains($both['alerts'][0]['title'], 'west'));
 $lag = HealthRules::evaluate(['west' => $slow], ['west' => ['running' => true, 'lag' => 2]], $settings, false);
 check('the alert says how slow', str_contains($lag['alerts'][0]['body'] ?? '', '9.5 TPS, 105 ms per tick for 3 minutes'), json_encode($lag['alerts']));
+
+$memory = [];
+$flagged = [];
+foreach ([$ok, $slow, $slow, $slow, $slow, $slow] as $seen) {
+    $r = HealthRules::evaluate(['west' => $seen], $memory, $settings, false);
+    $memory = $r['memory'];
+    $flagged = array_merge($flagged, $r['lagging']);
+}
+check('a lagging shard is flagged for a spark profile once, when the alert goes out', $flagged === ['west'], json_encode($flagged));
+$withRestart = HealthRules::evaluate(['west' => $slow], ['west' => ['running' => true, 'lag' => 2]], ['restart_on_lag' => true] + $settings, false);
+check('no profile when the shard is restarted instead', $withRestart['lagging'] === [] && $withRestart['restart'] === ['west']);
+
+// ---------------- memory advice
+$sample = fn (int $used, ?float $tps) => ['memory_mb' => $used, 'memory_limit_mb' => 8192, 'tps' => $tps, 'mspt' => null];
+check('memory: full but not lagging is normal for Java', MemoryAdvice::suggest(array_fill(0, 60, $sample(8000, 19.9)), 8192) === null);
+check('memory: lagging with plenty of room isn\'t a memory problem', MemoryAdvice::suggest(array_fill(0, 60, $sample(4000, 12.0)), 8192) === null);
+check('memory: full and lagging most of the hour: a quarter more, in 512 MB steps', MemoryAdvice::suggest(array_fill(0, 60, $sample(8000, 14.0)), 8192) === 10240);
+check('memory: small servers get at least 1 GB more', MemoryAdvice::suggest(array_fill(0, 60, ['memory_mb' => 2000, 'memory_limit_mb' => 2048, 'tps' => 14.0, 'mspt' => null]), 2048) === 3072);
+check('memory: a short spike isn\'t enough', MemoryAdvice::suggest(array_merge(array_fill(0, 20, $sample(8000, 14.0)), array_fill(0, 40, $sample(5000, 19.9))), 8192) === null);
+check('memory: too little data says nothing', MemoryAdvice::suggest(array_fill(0, 10, $sample(8000, 14.0)), 8192) === null);
 
 echo $failures === 0 ? "\nAll checks passed\n" : "\n$failures check(s) failed\n";
 exit($failures === 0 ? 0 : 1);

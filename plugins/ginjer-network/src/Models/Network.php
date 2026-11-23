@@ -37,6 +37,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property ?int $backup_every_hours
  * @property int $backup_keep
  * @property ?\Illuminate\Support\Carbon $last_backup_at
+ * @property ?string $restart_daily_at
+ * @property ?\Illuminate\Support\Carbon $last_daily_restart
  * @property Collection<int, NetworkMember> $members
  */
 class Network extends Model
@@ -68,6 +70,8 @@ class Network extends Model
         'backup_every_hours',
         'backup_keep',
         'last_backup_at',
+        'restart_daily_at',
+        'last_daily_restart',
     ];
 
     protected $hidden = ['redis_password', 'github_token'];
@@ -80,6 +84,7 @@ class Network extends Model
             'health_alerts' => 'boolean',
             'restart_on_lag' => 'boolean',
             'last_backup_at' => 'datetime',
+            'last_daily_restart' => 'date',
             'border_protection' => 'integer',
             'handoff_timeout_seconds' => 'integer',
             'redis_port' => 'integer',

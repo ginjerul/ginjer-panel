@@ -286,6 +286,12 @@ try {
     $count = DB::table('notifications')->where('notifiable_id', $user->id)->count();
     $health->check($network);
     check('health: quiet while the network is busy', DB::table('notifications')->where('notifiable_id', $user->id)->count() === $count);
+    $metrics = \Ginjer\Network\Models\ShardMetric::where('network_id', $network->id)->get();
+    check('history: every check stores one row per shard', $metrics->count() === 9 && $metrics->pluck('shard')->unique()->sort()->values()->all() === ['east', 'north', 'west'], (string) $metrics->count());
+    check('history: with Wings\' memory and CPU', $metrics->firstWhere('shard', 'west')->memory_mb === 3072 && $metrics->firstWhere('shard', 'west')->cpu === 87.5);
+    \Ginjer\Network\Models\ShardMetric::create(['network_id' => $network->id, 'shard' => 'west', 'recorded_at' => now()->subDays(8)]);
+    $health->check($network);
+    check('history: rows older than a week are dropped', \Ginjer\Network\Models\ShardMetric::where('network_id', $network->id)->where('recorded_at', '<', now()->subDays(7))->doesntExist());
     Busy::stop($network->id);
     $state[$west->uuid] = 'running';
     $state[$east->uuid] = 'running';

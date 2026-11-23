@@ -21,12 +21,13 @@ final class HealthRules
      * @param  array<string, array{state: ?string, reporting: bool, tps: ?float, mspt: ?float}>  $seen  shard name => what was observed
      * @param  array<string, array<string, mixed>>  $memory  shard name => what the last check remembered
      * @param  array{lag_tps: int, lag_minutes: int, restart_on_lag: bool}  $settings
-     * @return array{alerts: list<array{level: string, title: string, body: string}>, restart: list<string>, memory: array<string, array<string, mixed>>}
+     * @return array{alerts: list<array{level: string, title: string, body: string}>, restart: list<string>, lagging: list<string>, memory: array<string, array<string, mixed>>}
      */
     public static function evaluate(array $seen, array $memory, array $settings, bool $busy): array
     {
         $alerts = [];
         $restart = [];
+        $lagging = []; // shards whose lag was just reported: worth a spark profile
         $next = [];
 
         foreach ($seen as $name => $now) {
@@ -80,7 +81,8 @@ final class HealthRules
                         $alerts[] = ['level' => 'warning', 'title' => "Restarting $name: it's lagging", 'body' => $detail . ' Restarting it, as set in the network\'s health settings.'];
                         $m['lag'] = 0; // a fresh start
                     } else {
-                        $alerts[] = ['level' => 'warning', 'title' => "$name is lagging", 'body' => $detail . ' The Performance page and a spark profile can show why.'];
+                        $alerts[] = ['level' => 'warning', 'title' => "$name is lagging", 'body' => $detail . ' If spark is installed, a profile is being recorded; its link follows in a minute.'];
+                        $lagging[] = $name;
                         $m['lagAlerted'] = true;
                     }
                 }
@@ -96,6 +98,6 @@ final class HealthRules
             $next[$name] = $m;
         }
 
-        return ['alerts' => $alerts, 'restart' => $restart, 'memory' => $next];
+        return ['alerts' => $alerts, 'restart' => $restart, 'lagging' => $lagging, 'memory' => $next];
     }
 }

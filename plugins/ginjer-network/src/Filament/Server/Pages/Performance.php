@@ -169,6 +169,35 @@ class Performance extends Page implements HasTable
                         \Filament\Forms\Components\TextInput::make('radius')->label('Radius around 0, 0 (blocks)')->numeric()->integer()->minValue(500)->default(5000)->required(),
                     ])
                     ->action(fn (array $data) => $this->pregenerate((string) $data['world'], (int) $data['radius'])),
+                Action::make('exclude_pregen_progress')
+                    ->label('Pre-generation progress')
+                    ->icon('tabler-progress')
+                    ->schema([
+                        \Filament\Forms\Components\TextInput::make('world')->default('world')->required(),
+                        \Filament\Forms\Components\TextInput::make('radius')->label('Radius around 0, 0 (blocks)')->numeric()->integer()->minValue(500)->default(5000)->required(),
+                    ])
+                    ->action(function (array $data) {
+                        [$shard, $regions] = ServerTools::shardOf($this->server());
+                        $area = ServerTools::area($regions, $shard, (int) $data['radius']);
+                        if ($area === null) {
+                            Notification::make()->title('This shard owns none of that area')->warning()->send();
+
+                            return;
+                        }
+                        try {
+                            $folder = trim((string) $data['world'], '/') . '/region';
+                            $files = collect(app(\App\Repositories\Daemon\DaemonFileRepository::class)->setServer($this->server())->getDirectory($folder))->pluck('name')->all();
+                            $p = \Ginjer\Network\Services\Ops\Hotspots::pregenProgress($files, $area);
+                            Notification::make()
+                                ->title("About {$p['percent']}% generated")
+                                ->body("{$p['have']} of the {$p['need']} region files (512 × 512 blocks each) for that area exist. A region file can be partly generated, so this is an estimate." . ($p['percent'] < 100 ? ' Pre-generate the map to fill in the rest.' : ''))
+                                ->color($p['percent'] >= 95 ? 'success' : 'warning')
+                                ->persistent()
+                                ->send();
+                        } catch (Throwable $exception) {
+                            Notification::make()->title('Couldn\'t read the world\'s region folder')->body($exception->getMessage())->danger()->send();
+                        }
+                    }),
                 Action::make('exclude_spark')
                     ->label('Profile with spark')
                     ->icon('tabler-activity-heartbeat')
