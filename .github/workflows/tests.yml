@@ -63,4 +63,5 @@ jobs:
         run: |
           F=plugins/ginjer-network/tests/fixtures
           php plugins/ginjer-network/tests/panel-test.php
+          php plugins/ginjer-network/tests/ops-panel-test.php
           GINJER_EGG=$GITHUB_WORKSPACE/eggs/egg-reef-shard.yaml php plugins/ginjer-network/tests/split-panel-test.php $F/nodes-world.json $F/nodes-towns.json

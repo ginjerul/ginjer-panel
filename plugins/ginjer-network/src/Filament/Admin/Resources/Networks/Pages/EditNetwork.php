@@ -138,6 +138,13 @@ class EditNetwork extends EditRecord
                 ->color('gray')
                 ->url(fn () => NetworkResource::getUrl('plugins', ['record' => $this->getRecord()])),
 
+            Action::make('backups')
+                ->label('Backups')
+                ->tooltip('Back up and restore the whole network')
+                ->icon('tabler-database')
+                ->color('gray')
+                ->url(fn () => NetworkResource::getUrl('backups', ['record' => $this->getRecord()])),
+
             Action::make('velocity')
                 ->label('Velocity servers')
                 ->tooltip('Velocity servers')

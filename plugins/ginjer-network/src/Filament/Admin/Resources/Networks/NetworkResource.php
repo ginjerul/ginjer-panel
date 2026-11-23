@@ -16,6 +16,7 @@ use Ginjer\Network\Enums\MemberRole;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\CreateNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\EditNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\ListNetworks;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkBackupsPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPluginsPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\RelationManagers\MembersRelationManager;
 use Ginjer\Network\Models\Network;
@@ -233,6 +234,7 @@ class NetworkResource extends Resource
             'create' => CreateNetwork::route('/create'),
             'edit' => EditNetwork::route('/{record}/edit'),
             'plugins' => NetworkPluginsPage::route('/{record}/plugins'),
+            'backups' => NetworkBackupsPage::route('/{record}/backups'),
         ];
     }
 }
