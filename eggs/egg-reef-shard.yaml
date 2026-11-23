@@ -1,0 +1,185 @@
+_comment: 'Ginjer Network: a Reef shard with Nodes and GinjerMap, behind a Velocity proxy'
+meta:
+  version: PLCN_v3
+  update_url: 'https://raw.githubusercontent.com/ginjerul/ginjer-panel/main/eggs/egg-reef-shard.yaml'
+exported_at: '2026-11-23T00:00:00+00:00'
+name: 'Reef Shard (Nodes)'
+author: ginjerul@users.noreply.github.com
+uuid: 27120442-28f2-49ef-a019-bc2c573af888
+description: |-
+  One shard of a sharded Nodes world: Reef (a Paper fork that splits one world across servers),
+  the Nodes plugin and GinjerMap, set up for a Velocity proxy with modern forwarding.
+  Add it to a network in the Ginjer Network plugin to set its regions, shard name and Redis.
+tags:
+  - minecraft
+  - reef
+  - nodes
+features:
+  - eula
+  - java_version
+  - pid_limit
+docker_images:
+  'Java 21': 'ghcr.io/pelican-eggs/yolks:java_21'
+file_denylist: { }
+startup_commands:
+  Default: 'java -Xms128M -XX:MaxRAMPercentage=95.0 -Dterminal.jline=false -Dterminal.ansi=true -jar {{SERVER_JARFILE}}'
+config:
+  files:
+    server.properties:
+      parser: properties
+      find:
+        server-ip: ''
+        server-port: '{{server.allocations.default.port}}'
+        query.port: '{{server.allocations.default.port}}'
+        online-mode: 'false'
+    config/paper-global.yml:
+      parser: yaml
+      find:
+        proxies.velocity.enabled: 'true'
+        proxies.velocity.online-mode: 'true'
+        proxies.velocity.secret: '{{server.environment.VELOCITY_SECRET}}'
+  startup:
+    done: ')! For help, type '
+  logs: { }
+  stop: stop
+scripts:
+  installation:
+    script: |-
+      #!/bin/bash
+      # Reef shard installation. Server files: /mnt/server
+      set -e
+      cd /mnt/server
+      mkdir -p plugins
+
+      # download URL [GitHub token]: a plain download, with the token when one is given
+      fetch() {
+          if [ -n "$2" ]; then
+              curl -fsSL -H "Authorization: Bearer $2" -o "$3" "$1"
+          else
+              curl -fsSL -o "$3" "$1"
+          fi
+      }
+
+      # repo tag asset out token: one file from a GitHub release (works for private repos with a token)
+      release_asset() {
+          local api="https://api.github.com/repos/$1/releases/tags/$2"
+          [ "$2" = "latest" ] && api="https://api.github.com/repos/$1/releases/latest"
+          local auth=()
+          [ -n "$5" ] && auth=(-H "Authorization: Bearer $5")
+          local url
+          url=$(curl -fsSL "${auth[@]}" "$api" | jq -r --arg name "$3" '.assets[] | select(.name == $name) | .url' | head -n 1)
+          if [ -z "$url" ] || [ "$url" = "null" ]; then
+              echo "No $3 in release $2 of $1 (private repo without a GitHub token?)"
+              return 1
+          fi
+          curl -fsSL "${auth[@]}" -H "Accept: application/octet-stream" -o "$4" "$url"
+      }
+
+      echo "== Reef"
+      if [ -n "${REEF_JAR_URL}" ]; then
+          fetch "${REEF_JAR_URL}" "${GITHUB_TOKEN}" "${SERVER_JARFILE}"
+          echo "Downloaded Reef to ${SERVER_JARFILE}"
+      elif [ -f "${SERVER_JARFILE}" ]; then
+          echo "No Reef URL set, keeping the ${SERVER_JARFILE} that is already here"
+      else
+          echo "No Reef URL set and no ${SERVER_JARFILE} yet: upload the Reef paperclip jar as ${SERVER_JARFILE} before starting"
+      fi
+
+      if [ -n "${NODES_REPO}" ]; then
+          echo "== Nodes and GinjerMap from ${NODES_REPO} (${NODES_RELEASE})"
+          release_asset "${NODES_REPO}" "${NODES_RELEASE}" nodes.jar plugins/nodes.jar "${GITHUB_TOKEN}" || echo "Nodes was not installed"
+          if [ "${INSTALL_GINJERMAP}" = "1" ]; then
+              release_asset "${NODES_REPO}" "${NODES_RELEASE}" ginjermap.jar plugins/ginjermap.jar "${GITHUB_TOKEN}" || echo "GinjerMap was not installed"
+          fi
+      fi
+
+      if [ -n "${KOTLIN_RUNTIME_URL}" ]; then
+          echo "== Kotlin runtime"
+          fetch "${KOTLIN_RUNTIME_URL}" "" plugins/kotlin-runtime.jar || echo "The Kotlin runtime was not installed"
+      fi
+
+      echo "Done. Start the shard once so Reef and Nodes create their config files, then use"
+      echo "Push config to shards in the Ginjer Network plugin."
+    container: 'ghcr.io/pelican-eggs/installers:debian'
+    entrypoint: bash
+variables:
+  - name: 'Server Jar File'
+    description: 'The name of the Reef jar to run.'
+    env_variable: SERVER_JARFILE
+    default_value: server.jar
+    user_viewable: true
+    user_editable: true
+    rules:
+      - required
+      - 'regex:/^([\w\d._-]+)(\.jar)$/'
+    sort: 1
+  - name: 'Reef Jar URL'
+    description: 'Where to download the Reef paperclip jar from. Leave empty to upload it yourself.'
+    env_variable: REEF_JAR_URL
+    default_value: ''
+    user_viewable: true
+    user_editable: true
+    rules:
+      - nullable
+      - url
+    sort: 2
+  - name: 'Nodes Repository'
+    description: 'GitHub repository whose releases have nodes.jar and ginjermap.jar. Empty skips them.'
+    env_variable: NODES_REPO
+    default_value: ginjerul/ginjer-nodes
+    user_viewable: true
+    user_editable: true
+    rules:
+      - nullable
+      - 'regex:/^[\w.-]+\/[\w.-]+$/'
+    sort: 3
+  - name: 'Nodes Release'
+    description: 'Release tag to install from, e.g. v0.1.1, dev-master or latest.'
+    env_variable: NODES_RELEASE
+    default_value: dev-master
+    user_viewable: true
+    user_editable: true
+    rules:
+      - required
+      - 'regex:/^[\w.-]+$/'
+    sort: 4
+  - name: 'Install GinjerMap'
+    description: '1 to install GinjerMap with Nodes, 0 to skip it.'
+    env_variable: INSTALL_GINJERMAP
+    default_value: '1'
+    user_viewable: true
+    user_editable: true
+    rules:
+      - required
+      - boolean
+    sort: 5
+  - name: 'Kotlin Runtime URL'
+    description: 'Download URL of the Kotlin runtime plugin Nodes needs. Empty to upload it yourself.'
+    env_variable: KOTLIN_RUNTIME_URL
+    default_value: ''
+    user_viewable: true
+    user_editable: true
+    rules:
+      - nullable
+      - url
+    sort: 6
+  - name: 'GitHub Token'
+    description: 'Only needed for a private Nodes repository or Reef URL: a fine-grained token with read access to its contents.'
+    env_variable: GITHUB_TOKEN
+    default_value: ''
+    user_viewable: false
+    user_editable: false
+    rules:
+      - nullable
+      - string
+    sort: 7
+  - name: 'Velocity Forwarding Secret'
+    description: 'The forwarding secret from the proxy (forwarding.secret). Must be the same on every shard.'
+    env_variable: VELOCITY_SECRET
+    default_value: ''
+    user_viewable: false
+    user_editable: false
+    rules:
+      - nullable
+      - string
+    sort: 8
