@@ -65,6 +65,13 @@ The region checks and the Nodes config editor run without a panel:
 php plugins/ginjer-network/tests/services-test.php <panel>/vendor/autoload.php [path/to/nodes/config.yml]
 ```
 
+The end-to-end test runs inside a real panel with the plugin installed, with Wings faked. It creates a node, servers and a network inside a database transaction and rolls everything back at the end:
+
+```bash
+cd <panel>
+php plugins/ginjer-network/tests/panel-test.php [path/to/nodes/config.yml]
+```
+
 ## License
 
 [AGPL-3.0](LICENSE), like Pelican Panel. If you change this plugin and let other people use your panel, you must offer them the changed source.
