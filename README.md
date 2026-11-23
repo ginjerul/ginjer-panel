@@ -16,7 +16,11 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 - **Servers:** add the Velocity proxy, every Reef shard (each with its shard name, as in `velocity.toml`) and Redis. Mark one shard as the **Nodes leader**.
 - **Power:** start, stop, restart or kill the whole network in the right order. Start goes Redis, then the leader, then the other shards, then the proxy. Stop goes the other way round, so players leave first and the leader saves last.
 - **Push config to shards:** writes the `sharding` section of `reef.yml` (the same regions everywhere, each shard's own `this-server`) and of `plugins/nodes/config.yml` (leader or follower, shard name, Redis) on every shard. Nodes' config keeps all its comments. Before pushing, it checks that the regions are valid, that every shard owns an area and that there's exactly one leader.
-- **Status:** each server's state, the shard that holds the Nodes leader lock in Redis, and each shard's role and player count as Nodes reports them. It warns when the lock holder isn't the leader set in the panel (after a failover).
+- **Status:** for each shard, its state, Nodes role, TPS and time per tick, players, memory and CPU. It also shows the shard that holds the Nodes leader lock in Redis, and warns when that isn't the leader set in the panel (after a failover). TPS and tick time need a Nodes version that reports them.
+- **Health checks:** every minute, root admins get a notification when a shard goes down, stops syncing with Nodes, or stays below a TPS threshold for a few minutes, plus one when it recovers. A lagging shard can optionally be restarted. Planned restarts (updates, backups) don't raise alarms. Set it up under **Health checks** on the network.
+- **Update shards:** downloads the newest Reef (Reef's `dev-main` release by default), Nodes and GinjerMap (a release of your Nodes repository; a private one needs a GitHub token, stored encrypted) once. It uploads them to every shard, then restarts the shards one at a time, followers first and the leader last, waiting for each to come back. Every upload finishes before anything restarts, and a shard that doesn't come back stops the rollout. **Power → Rolling restart** does the same without updating.
+- **Plugins:** switch a plugin on or off on every shard at once. It shows shards that disagree, or are missing a jar.
+- **Backups:** saves Nodes and the worlds and snapshots Redis, then backs up every server at the same moment as one network backup. Restore puts every server back to that moment. It keeps the last few network backups and can run every few hours.
 - **Promote now:** runs `nda shards promote` on a follower when the leader is down.
 - **Velocity servers:** the `[servers]` lines for the proxy's `velocity.toml`. With a proxy in the network, **Push config** writes them for you. It also keeps every comment, puts the leader first in `try`, drops the sample forced hosts that would stop Velocity from starting, sets forwarding to `modern`, and gives every shard the proxy's `forwarding.secret` (through the egg's `VELOCITY_SECRET` and in `paper-global.yml`). Shards on the proxy's node that listen on every interface are reached through Wings' Docker gateway (`GINJER_NETWORK_DOCKER_GATEWAY`, default `172.18.0.1`), and shards on other nodes through their node's address.
 
@@ -27,6 +31,10 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 | ![Status: the Nodes leader and each shard's role and players, read from Redis](docs/screenshots/status.png) | ![Power menu: start, restart, stop or kill the network](docs/screenshots/power.png) |
 | **Push config to shards** | **Velocity servers** |
 | ![Push result: two shards updated, one skipped because it has never started](docs/screenshots/push.png) | ![The velocity.toml lines for the shards](docs/screenshots/velocity.png) |
+| **Shard health** | **Update shards** |
+| ![Status with TPS, tick time, players, memory and CPU; one lagging shard in red](docs/screenshots/network-status.png) | ![Update dialog: Reef, Nodes and GinjerMap, where they come from, and the wait between shards](docs/screenshots/network-update.png) |
+| **Plugins on every shard** | **Network backups** |
+| ![One switch per plugin for all shards; spark is off on one of three](docs/screenshots/network-plugins.png) | ![A network backup of three servers, ready to restore](docs/screenshots/network-backups.png) |
 
 The screenshots come from a test panel with sample data.
 
@@ -36,10 +44,10 @@ The screenshots come from a test panel with sample data.
 
 1. **Pick** the server, the players you expect at peak, and optionally the number of shards (by default about 100 players each) and the nodes the new shards may use.
 2. **Plan.** It reads Nodes' `world.json` and `towns.json` from the server and splits the world into rectangles holding about the same number of players. Every claimed chunk counts, and more for towns with more residents. Each cut goes across the longer side, on a chunk border, and the outer regions reach the edge of the world, so no spot is left without a shard. RAM per shard is about 2 GB plus 48 MB per expected player, between 3 and 16 GB, with 1.5 GB extra for the leader. Each new shard goes on the chosen node with the most free memory and a free port. Without Nodes data, the area around spawn is split evenly.
-3. **Review** the shards, their areas, players, RAM, node and address. Rename them or change their RAM, then choose the Redis and proxy servers if you have them.
+3. **Review** the shards, their areas, players, RAM, node and address. Rename them or change their RAM. Then choose your Redis and proxy servers, or let the split create them from installed eggs (for example the community `Redis-7` and `Velocity` eggs). Redis gets a generated password, and the proxy is started once, configured and restarted.
 4. **Split.** In the background, it creates a copy of the server for each new shard (same egg, startup and variables, RAM as planned). It packs the original's files (not the Nether, End, logs or cache), and every new shard downloads and unpacks them through a signed link, so this also works across nodes. Then it gives the original its planned RAM, creates the network and pushes the Reef and Nodes settings. The result appears in your notifications.
 
-The original server must be stopped while it's copied. It becomes the Nodes leader and keeps the area around spawn, plus the Nether and the End.
+The original server must be stopped while it's copied. It becomes the Nodes leader and keeps the area around spawn, plus the Nether and the End. Everyone's inventory and position move into Reef's shared player data folder by themselves the first time the shards start (Reef copies `world/playerdata` there, never overwriting).
 
 If a node's address is a private IP, Wings refuses to download from it. Add that address under `api.remote_download.allowlist` in the Wings `config.yml` of the nodes that get new shards.
 
@@ -47,13 +55,15 @@ If a node's address is a private IP, Wings refuses to download from it. Add that
 |---|---|
 | ![Step 1: the server, players at peak, shard count and nodes](docs/screenshots/split-server.png) | ![Step 2: three shards balanced from 246 residents in 38 towns, with RAM and ports](docs/screenshots/split-plan.png) |
 
+![The plan step offering to create Redis and the proxy](docs/screenshots/network-split-services.png)
+
 ![The notification when the split is done](docs/screenshots/split-done.png)
 
 ### Install
 
 1. Download this repository as a zip, then upload the `plugins/ginjer-network` folder as a zip in **Admin → Plugins → Import**, or copy the folder into the panel's `plugins/` directory.
 2. Install it in **Admin → Plugins**. That creates its two database tables.
-3. The power buttons start servers a few seconds apart through Laravel's queue, so the panel's queue worker must be running. It is on a standard Pelican install.
+3. The power buttons, updates, backups and splits run in the background through Laravel's queue, and the health checks and scheduled backups run on Laravel's scheduler. A standard Pelican install runs both (the queue worker and the `schedule:run` cron).
 
 Settings (optional, in the panel's `.env`):
 
@@ -82,6 +92,14 @@ Reads the server's `server.properties`, `bukkit.yml`, `spigot.yml`, `config/pape
 The setting names and defaults were checked against the source of Paper 1.21.11 (the commit Reef is built on), Reef and Nodes.
 
 ![The Performance page with the Performance profile](docs/screenshots/performance.png)
+
+**Tools** (needs console access):
+- **Pre-generate the map:** Chunky generates the chunks within a radius of 0, 0 ahead of time, so exploring doesn't lag. On a shard, only the part it owns is generated.
+- **Profile with spark:** a 60-second profile, then a notification with the link.
+
+Both install the plugin from Modrinth the first time; restart the server so it loads, then use them.
+
+![The Tools menu on the Performance page](docs/screenshots/network-tools.png)
 
 ### Plugins
 
@@ -125,6 +143,9 @@ The optimizer (on the config files in `tests/fixtures/`, plus Nodes' real `confi
 
 ```bash
 php plugins/ginjer-network/tests/optimizer-test.php <vendor/autoload.php> [path/to/nodes/config.yml]
+php plugins/ginjer-network/tests/velocity-test.php
+php plugins/ginjer-network/tests/health-test.php
+php plugins/ginjer-network/tests/tools-test.php <vendor/autoload.php>
 ```
 
 
@@ -137,6 +158,7 @@ The end-to-end tests run inside a real panel with the plugin installed, with Win
 ```bash
 cd <panel>
 php plugins/ginjer-network/tests/panel-test.php [path/to/nodes/config.yml]
+php plugins/ginjer-network/tests/ops-panel-test.php
 GINJER_EGG=<repo>/eggs/egg-reef-shard.yaml php plugins/ginjer-network/tests/split-panel-test.php <world.json> <towns.json>
 ```
 
