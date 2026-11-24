@@ -205,6 +205,55 @@ class NetworkResource extends Resource
                             ->helperText('Off by default: a restart disconnects that shard\'s players.')
                             ->inline(false),
                     ]),
+                Section::make('Rolling restarts')
+                    ->description('How updates, rolling restarts and the daily restart go through the shards.')
+                    ->columns(4)
+                    ->collapsible()
+                    ->schema([
+                        \Filament\Forms\Components\Select::make('rolling_order')
+                            ->label('Order')
+                            ->options(\Ginjer\Network\Services\Ops\RollingPlan::ORDERS)
+                            ->default('followers_first')
+                            ->selectablePlaceholder(false)
+                            ->helperText('The leader always restarts on its own.'),
+                        TextInput::make('rolling_batch')
+                            ->label('Shards at a time')
+                            ->numeric()->integer()->minValue(1)
+                            ->default(1)->required()
+                            ->helperText('More is faster, but more players are moved at once.'),
+                        TextInput::make('rolling_warn_seconds')
+                            ->label('Warn players first')
+                            ->numeric()->integer()->minValue(0)->maxValue(300)
+                            ->suffix('seconds')
+                            ->default(0)->required()
+                            ->helperText('A chat message on each shard before it restarts. 0: no warning.'),
+                        TextInput::make('restart_settle_seconds')
+                            ->label('Wait after each batch')
+                            ->numeric()->integer()->minValue(0)
+                            ->suffix('seconds')
+                            ->default(20)->required(),
+                        TextInput::make('rolling_stop_timeout')
+                            ->label('Stop timeout')
+                            ->numeric()->integer()->minValue(10)
+                            ->suffix('seconds')
+                            ->default(180)->required()
+                            ->helperText('Then it\'s killed.'),
+                        TextInput::make('rolling_start_timeout')
+                            ->label('Start timeout')
+                            ->numeric()->integer()->minValue(10)
+                            ->suffix('seconds')
+                            ->default(300)->required()
+                            ->helperText('How long a shard may take to come back.'),
+                        \Filament\Forms\Components\Select::make('rolling_on_failure')
+                            ->label('When a shard fails')
+                            ->options(['stop' => 'Stop (leave the rest untouched)', 'continue' => 'Carry on with the rest'])
+                            ->default('stop')
+                            ->selectablePlaceholder(false),
+                        \Filament\Forms\Components\Toggle::make('rolling_include_proxy')
+                            ->label('Restart the proxy too')
+                            ->helperText('Last, on its own. It disconnects everyone, so it\'s off by default.')
+                            ->inline(false),
+                    ]),
                 Section::make('Backups')
                     ->description('Backs up every server in the network at the same moment, after saving Nodes, the worlds and Redis, so a restore never mixes times.')
                     ->columns(2)

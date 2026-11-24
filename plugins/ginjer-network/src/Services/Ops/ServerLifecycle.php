@@ -46,6 +46,53 @@ class ServerLifecycle
         return $this->waitFor($server, ['running'], $timeout);
     }
 
+    /**
+     * Stops several servers together (all are asked at once, then waited for); one that doesn't
+     * stop in time is killed.
+     *
+     * @param  list<Server>  $servers
+     * @return list<Server> the ones that still didn't stop
+     */
+    public function stopAll(array $servers, int $timeout = 180): array
+    {
+        $waiting = [];
+        foreach ($servers as $server) {
+            if (!in_array($this->state($server), ['offline', 'missing'], true)) {
+                $this->daemon->setServer($server)->power('stop');
+                $waiting[] = $server;
+            }
+        }
+        $failed = [];
+        foreach ($waiting as $server) {
+            if ($this->waitFor($server, ['offline'], $timeout)) {
+                continue;
+            }
+            $this->daemon->setServer($server)->power('kill');
+            if (!$this->waitFor($server, ['offline'], 30)) {
+                $failed[] = $server;
+            }
+        }
+
+        return $failed;
+    }
+
+    /**
+     * Starts several servers together and waits until each is running.
+     *
+     * @param  list<Server>  $servers
+     * @return list<Server> the ones that didn't come up in time
+     */
+    public function startAll(array $servers, int $timeout = 300): array
+    {
+        foreach ($servers as $server) {
+            if ($this->state($server) !== 'running') {
+                $this->daemon->setServer($server)->power('start');
+            }
+        }
+
+        return array_values(array_filter($servers, fn (Server $server) => !$this->waitFor($server, ['running'], $timeout)));
+    }
+
     public function restart(Server $server): bool
     {
         return $this->stop($server) && $this->start($server);

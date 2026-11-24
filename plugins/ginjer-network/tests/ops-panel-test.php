@@ -54,7 +54,8 @@ $state = [];   // uuid => running|offline
 $log = [];     // what happened, in order: "power west stop", "upload west plugins/nodes-0.1.jar.ginjer-new", ...
 $names = [];   // uuid => short name for the log
 $failUpload = false;
-Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$failUpload) {
+$neverStarts = []; // uuids that don't come back up
+Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$failUpload, &$neverStarts) {
     $url = $request->url();
     $path = (string) parse_url($url, PHP_URL_PATH);
     parse_str((string) parse_url($url, PHP_URL_QUERY), $q);
@@ -113,7 +114,7 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
             return $ok(['state' => $state[$uuid] ?? 'offline', 'utilization' => ['memory_bytes' => 3 * 1073741824, 'memory_limit_bytes' => 8 * 1073741824, 'cpu_absolute' => 87.5, 'uptime' => 3600000]]);
         case $rest === '/power':
             $log[] = "power {$names[$uuid]} {$data['action']}";
-            $state[$uuid] = in_array($data['action'], ['start', 'restart'], true) ? 'running' : 'offline';
+            $state[$uuid] = in_array($data['action'], ['start', 'restart'], true) && !in_array($uuid, $neverStarts, true) ? 'running' : 'offline';
 
             return $ok('', 204);
         case $rest === '/commands':
@@ -269,6 +270,35 @@ try {
     check('rolling restart: restarts running shards in order, uploads nothing',
         collect($log)->filter(fn ($l) => str_starts_with($l, 'power'))->values()->all() === ['power east stop', 'power east start', 'power west stop', 'power west start']
         && !collect($log)->contains(fn ($l) => str_starts_with($l, 'upload')));
+
+    // configured rolling restarts: leader first, 2 at a time, a warning, the proxy too
+    $network->update(['rolling_order' => 'leader_first', 'rolling_batch' => 2, 'rolling_warn_seconds' => 30, 'rolling_include_proxy' => true]);
+    $log = [];
+    app()->call([new RollingUpdate($network->id, [], $user->id), 'handle']);
+    $steps = collect($log)->filter(fn ($l) => str_starts_with($l, 'power') || str_starts_with($l, 'command'))->values()->all();
+    check('configured: leader first, then the followers together, then the proxy; each warned first', $steps === [
+        'command west say This area restarts in 30 seconds. You can rejoin right after.', 'power west stop', 'power west start',
+        'command east say This area restarts in 30 seconds. You can rejoin right after.', 'power east stop', 'power east start',
+        'command proxy say This area restarts in 30 seconds. You can rejoin right after.', 'power proxy stop', 'power proxy start',
+    ], json_encode($steps));
+    check('configured: the offline shard isn\'t warned or started', !collect($log)->contains(fn ($l) => str_contains($l, ' north ')));
+
+    // a shard that doesn't come back
+    $network->update(['rolling_order' => 'followers_first', 'rolling_batch' => 1, 'rolling_warn_seconds' => 0, 'rolling_include_proxy' => false, 'rolling_on_failure' => 'stop']);
+    $neverStarts = [$east->uuid];
+    $log = [];
+    app()->call([new RollingUpdate($network->id, [], $user->id), 'handle']);
+    check('on failure "stop": nothing after the failed shard is touched', !collect($log)->contains(fn ($l) => str_contains($l, 'power west')), json_encode($log));
+    $network->update(['rolling_on_failure' => 'continue']);
+    $state[$east->uuid] = 'running';
+    $log = [];
+    app()->call([new RollingUpdate($network->id, [], $user->id), 'handle']);
+    $note = DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->last();
+    check('on failure "continue": the rest still restart', in_array('power west start', $log, true), json_encode($log));
+    check('on failure "continue": the problem is reported', str_contains((string) $note, 'with problems') && str_contains((string) $note, 'east didn'), (string) $note);
+    $neverStarts = [];
+    $state[$east->uuid] = 'running';
+    $network->update(['rolling_on_failure' => 'stop']);
 
     // ---------------- health
     $health = app(NetworkHealth::class);

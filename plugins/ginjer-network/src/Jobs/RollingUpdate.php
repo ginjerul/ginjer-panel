@@ -13,6 +13,7 @@ use Ginjer\Network\Models\Network;
 use Ginjer\Network\Models\NetworkMember;
 use Ginjer\Network\Services\Ops\Artifacts;
 use Ginjer\Network\Services\Ops\Busy;
+use Ginjer\Network\Services\Ops\RollingPlan;
 use Ginjer\Network\Services\Ops\ServerLifecycle;
 use Ginjer\Network\Services\Ops\WingsUploader;
 use Illuminate\Bus\Queueable;
@@ -86,32 +87,63 @@ class RollingUpdate implements ShouldQueue
                 $done[] = 'uploaded to ' . $shards->count() . ' shard(s)';
             }
 
-            // 3. one shard at a time
-            foreach ($shards as $shard) {
-                $server = $shard->server;
-                $wasRunning = $lifecycle->state($server) === 'running';
-                if (!$lifecycle->stop($server)) {
-                    throw new \RuntimeException("{$server->name} didn't stop. The shards before it are updated; the rest are untouched.");
-                }
-                foreach ($plan[$server->id] as [$directory, $target, $exists]) {
-                    if ($exists) {
-                        $files->setServer($server)->deleteFiles($directory, [$target]);
+            // 3. batch by batch, in the network's rolling restart order
+            $servers = $network->members->mapWithKeys(fn (NetworkMember $m) => [$m->server_id => $m->server]);
+            $batches = RollingPlan::batches(
+                $shards->map(fn (NetworkMember $m) => ['id' => $m->server_id, 'name' => (string) $m->shard_name, 'leader' => $m->nodes_leader])->all(),
+                $network->rolling_order ?: 'followers_first',
+                max(1, (int) $network->rolling_batch),
+                $network->rolling_include_proxy ? $network->membersWithRole(MemberRole::Proxy)->first()?->server_id : null,
+            );
+            $failed = [];
+            foreach ($batches as $batch) {
+                $members = array_map(fn (int $id) => $servers[$id], $batch);
+                $running = array_values(array_filter($members, fn (Server $s) => $lifecycle->state($s) === 'running'));
+
+                if ($running !== [] && $network->rolling_warn_seconds > 0) {
+                    $seconds = $network->rolling_warn_seconds;
+                    foreach ($running as $server) {
+                        rescue(fn () => $server->send("say This area restarts in $seconds seconds. You can rejoin right after."), report: false);
                     }
-                    $files->setServer($server)->renameFiles($directory, [['from' => $target . self::STAGED, 'to' => $target]]);
+                    ServerLifecycle::sleep($seconds);
                 }
-                if ($wasRunning) {
-                    if (!$lifecycle->start($server)) {
-                        throw new \RuntimeException("{$server->name} didn't come back up after the update. Check its console. The shards after it are untouched.");
+
+                $stuck = $lifecycle->stopAll($members, max(10, (int) $network->rolling_stop_timeout));
+                foreach ($stuck as $server) {
+                    $failed[] = "{$server->name} didn't stop";
+                }
+                foreach ($members as $server) {
+                    if (in_array($server, $stuck, true)) {
+                        continue;
                     }
+                    foreach ($plan[$server->id] ?? [] as [$directory, $target, $exists]) {
+                        if ($exists) {
+                            $files->setServer($server)->deleteFiles($directory, [$target]);
+                        }
+                        $files->setServer($server)->renameFiles($directory, [['from' => $target . self::STAGED, 'to' => $target]]);
+                    }
+                }
+
+                $toStart = array_values(array_filter($running, fn (Server $s) => !in_array($s, $stuck, true)));
+                foreach ($lifecycle->startAll($toStart, max(10, (int) $network->rolling_start_timeout)) as $server) {
+                    $failed[] = "{$server->name} didn't come back up";
+                }
+                foreach ($members as $server) {
+                    $done[] = $server->name . (in_array($server, $running, true) ? ' restarted' : ' updated (was offline, left offline)');
+                }
+
+                if ($failed !== [] && $network->rolling_on_failure !== 'continue') {
+                    throw new \RuntimeException(implode('; ', $failed) . '. Stopped here: the servers after it are untouched. Check its console.');
+                }
+                if ($toStart !== []) {
                     ServerLifecycle::sleep(max(0, $network->restart_settle_seconds));
                 }
-                $done[] = $server->name . ($wasRunning ? ' restarted' : ' updated (was offline, left offline)');
             }
 
             Notification::make()
-                ->title(($local === [] ? 'Rolling restart' : 'Rolling update') . " of {$network->name} finished")
-                ->body(implode('; ', $done) . '.')
-                ->success()
+                ->title(($local === [] ? 'Rolling restart' : 'Rolling update') . " of {$network->name} finished" . ($failed === [] ? '' : ' with problems'))
+                ->body(($failed === [] ? '' : 'Problems: ' . implode('; ', $failed) . '. ') . implode('; ', $done) . '.')
+                ->color($failed === [] ? 'success' : 'warning')
                 ->actions([Action::make('open')->label('Open network')->url(NetworkResource::getUrl('edit', ['record' => $network], panel: 'admin'))])
                 ->sendToDatabase($user);
         } catch (Throwable $exception) {

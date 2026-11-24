@@ -101,5 +101,19 @@ check('pregen: a small area is one region file', $q['need'] === 1 && $q['percent
 $edge = Hotspots::pregenProgress(['r.-1.0.mca', 'r.0.0.mca'], ['min-x' => -512, 'min-z' => 0, 'max-x' => 512, 'max-z' => 512]);
 check('pregen: region borders at multiples of 512 (negatives included)', $edge === ['have' => 2, 'need' => 2, 'percent' => 100], json_encode($edge));
 
+// ---------------- rolling restart order
+use Ginjer\Network\Services\Ops\RollingPlan;
+
+$shards = [['id' => 1, 'name' => 'europe', 'leader' => true], ['id' => 2, 'name' => 'americas', 'leader' => false],
+    ['id' => 3, 'name' => 'asia', 'leader' => false], ['id' => 4, 'name' => 'oceania', 'leader' => false], ['id' => 5, 'name' => 'africa', 'leader' => false]];
+check('rolling: default is followers one at a time, leader last', RollingPlan::batches($shards, 'followers_first', 1) === [[5], [2], [3], [4], [1]], json_encode(RollingPlan::batches($shards, 'followers_first', 1)));
+check('rolling: batches of 2, leader still alone', RollingPlan::batches($shards, 'followers_first', 2) === [[5, 2], [3, 4], [1]]);
+check('rolling: leader first', RollingPlan::batches($shards, 'leader_first', 3) === [[1], [5, 2, 3], [4]]);
+check('rolling: by name, the leader splits a batch', RollingPlan::batches($shards, 'by_name', 3) === [[5, 2, 3], [1], [4]], json_encode(RollingPlan::batches($shards, 'by_name', 3)));
+check('rolling: the proxy goes last, alone', RollingPlan::batches($shards, 'followers_first', 10, 99) === [[5, 2, 3, 4], [1], [99]]);
+check('rolling: an unknown order falls back to followers first', RollingPlan::batches($shards, 'nonsense', 1)[4] === [1]);
+check('rolling: batch size 0 is treated as 1', count(RollingPlan::batches($shards, 'followers_first', 0)) === 5);
+check('rolling: a network without a leader still works', RollingPlan::batches([['id' => 7, 'name' => 'a', 'leader' => false]], 'followers_first', 1) === [[7]]);
+
 echo $failures === 0 ? "\nAll checks passed\n" : "\n$failures check(s) failed\n";
 exit($failures === 0 ? 0 : 1);

@@ -66,7 +66,7 @@ class EditNetwork extends EditRecord
                     ->icon('tabler-refresh-dot')
                     ->color('warning')
                     ->requiresConfirmation()
-                    ->modalDescription('Restarts the shards one at a time, followers first and the leader last, waiting for each to come back before the next. The network never goes down as a whole.')
+                    ->modalDescription('Restarts the shards as set under Rolling restarts on this page (by default one at a time, followers first, leader last), waiting for each to come back. The network never goes down as a whole.')
                     ->action(fn () => $this->startRolling([])),
             ])
                 ->label('Power')
@@ -78,7 +78,7 @@ class EditNetwork extends EditRecord
                 ->icon('tabler-download')
                 ->color('primary')
                 ->modalHeading('Update the shards')
-                ->modalDescription('Downloads the newest files once, uploads them to every shard, then restarts the shards one at a time (followers first, leader last), waiting for each to come back. If anything fails, the rest of the shards are left alone.')
+                ->modalDescription('Downloads the newest files once, uploads them to every shard, then restarts the shards as set under Rolling restarts on this page (by default one at a time, followers first, leader last), waiting for each to come back.')
                 ->fillForm(fn () => [
                     'reef' => true,
                     'nodes' => filled($this->getRecord()->nodes_repo),
@@ -86,7 +86,6 @@ class EditNetwork extends EditRecord
                     'reef_jar_url' => $this->getRecord()->reef_jar_url ?: 'https://github.com/ginjerul/reef/releases/download/dev-main/reef.jar',
                     'nodes_repo' => $this->getRecord()->nodes_repo ?: 'ginjerul/ginjer-nodes',
                     'nodes_release' => $this->getRecord()->nodes_release ?: 'dev-master',
-                    'restart_settle_seconds' => $this->getRecord()->restart_settle_seconds,
                 ])
                 ->schema([
                     \Filament\Schemas\Components\Grid::make(3)->schema([
@@ -104,11 +103,10 @@ class EditNetwork extends EditRecord
                         ->password()->revealable()
                         ->dehydrated(fn ($state) => filled($state))
                         ->helperText(fn () => filled($this->getRecord()->github_token) ? 'A token is saved. Leave empty to keep it.' : 'Only for a private repository: a fine-grained token that can read its contents. Stored encrypted.'),
-                    \Filament\Forms\Components\TextInput::make('restart_settle_seconds')->label('Wait after each shard (seconds)')->numeric()->minValue(0)->required(),
                 ])
                 ->modalSubmitActionLabel('Update')
                 ->action(function (array $data) {
-                    $this->getRecord()->update(\Illuminate\Support\Arr::only($data, ['reef_jar_url', 'nodes_repo', 'nodes_release', 'github_token', 'restart_settle_seconds']));
+                    $this->getRecord()->update(\Illuminate\Support\Arr::only($data, ['reef_jar_url', 'nodes_repo', 'nodes_release', 'github_token']));
                     $this->startRolling(['reef' => (bool) $data['reef'], 'nodes' => (bool) $data['nodes'], 'ginjermap' => (bool) $data['ginjermap']]);
                 }),
 

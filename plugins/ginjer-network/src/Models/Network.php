@@ -39,6 +39,16 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property ?\Illuminate\Support\Carbon $last_backup_at
  * @property ?string $restart_daily_at
  * @property ?\Illuminate\Support\Carbon $last_daily_restart
+ * @property string $rolling_order
+ * @property int $rolling_batch
+ * @property int $rolling_warn_seconds
+ * @property bool $rolling_include_proxy
+ * @property int $rolling_stop_timeout
+ * @property int $rolling_start_timeout
+ * @property string $rolling_on_failure
+ * @property ?int $database_id
+ * @property ?string $synced_files
+ * @property ?int $sync_source_server_id
  * @property Collection<int, NetworkMember> $members
  */
 class Network extends Model
@@ -72,6 +82,16 @@ class Network extends Model
         'last_backup_at',
         'restart_daily_at',
         'last_daily_restart',
+        'rolling_order',
+        'rolling_batch',
+        'rolling_warn_seconds',
+        'rolling_include_proxy',
+        'rolling_stop_timeout',
+        'rolling_start_timeout',
+        'rolling_on_failure',
+        'database_id',
+        'synced_files',
+        'sync_source_server_id',
     ];
 
     protected $hidden = ['redis_password', 'github_token'];
@@ -85,6 +105,11 @@ class Network extends Model
             'restart_on_lag' => 'boolean',
             'last_backup_at' => 'datetime',
             'last_daily_restart' => 'date',
+            'rolling_include_proxy' => 'boolean',
+            'rolling_batch' => 'integer',
+            'rolling_warn_seconds' => 'integer',
+            'rolling_stop_timeout' => 'integer',
+            'rolling_start_timeout' => 'integer',
             'border_protection' => 'integer',
             'handoff_timeout_seconds' => 'integer',
             'redis_port' => 'integer',
