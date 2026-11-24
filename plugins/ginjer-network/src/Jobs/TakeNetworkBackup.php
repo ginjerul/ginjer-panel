@@ -30,6 +30,7 @@ class TakeNetworkBackup implements ShouldQueue
         Busy::start($network->id, 10);
         try {
             $result = $backups->take($network);
+            \Ginjer\Network\Services\Activity\NetworkLog::record($network, 'backup', 'Network backup started (' . count($result['backup']->backups) . ' servers)', $result['problems'] === [] ? null : implode(' ', $result['problems']), $result['problems'] === [] ? 'info' : 'warning', $user?->id);
             $user && Notification::make()
                 ->title("Backing up {$network->name}")
                 ->body('Started a backup of ' . count($result['backup']->backups) . ' server(s).' . ($result['problems'] === [] ? '' : ' ' . implode(' ', $result['problems'])))
@@ -37,6 +38,7 @@ class TakeNetworkBackup implements ShouldQueue
                 ->sendToDatabase($user);
         } catch (Throwable $exception) {
             report($exception);
+            \Ginjer\Network\Services\Activity\NetworkLog::record($network, 'backup.failed', 'Network backup failed', $exception->getMessage(), 'danger', $user?->id);
             $user && Notification::make()->title("Backing up {$network->name} failed")->body($exception->getMessage())->danger()->sendToDatabase($user);
         } finally {
             Busy::stop($network->id);

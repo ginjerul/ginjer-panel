@@ -27,10 +27,16 @@ use Illuminate\Support\HtmlString;
  */
 class NetworkConfigSyncPage extends Page implements HasTable
 {
+    use \Ginjer\Network\Filament\Admin\Resources\Networks\Pages\Concerns\ChecksNetworkAccess;
     use InteractsWithRecord;
     use InteractsWithTable;
 
     protected static string $resource = NetworkResource::class;
+
+    protected function networkAbility(): string
+    {
+        return 'update';
+    }
 
     /** @var list<array{path: string, same: list<string>, different: list<string>, missing: list<string>}> */
     public array $rows = [];
@@ -43,6 +49,7 @@ class NetworkConfigSyncPage extends Page implements HasTable
     public function mount(int|string $record): void
     {
         $this->record = $this->resolveRecord($record);
+        $this->checkNetworkAccess();
         $this->load();
     }
 
@@ -104,6 +111,7 @@ class NetworkConfigSyncPage extends Page implements HasTable
                 ])
                 ->action(function (array $data) {
                     $this->record->update($data);
+                    \Ginjer\Network\Services\Activity\NetworkLog::record($this->record, 'sync', 'Synced files changed', (string) $data['synced_files']);
                     $this->load();
                 }),
             Action::make('exclude_refresh')
@@ -119,6 +127,7 @@ class NetworkConfigSyncPage extends Page implements HasTable
                 ->modalDescription(fn () => "Copies these files from {$this->source} to every other shard where they differ. The old copies are kept as " . ConfigSync::OLD . ' files.')
                 ->action(function () {
                     $result = app(ConfigSync::class)->sync($this->record);
+                    \Ginjer\Network\Services\Activity\NetworkLog::record($this->record, 'sync', "Config sync copied {$result['copied']} file(s)", $result['failed'] === [] ? null : implode("\n", $result['failed']), $result['failed'] === [] ? 'info' : 'warning');
                     Notification::make()
                         ->title($result['failed'] === [] ? "Copied {$result['copied']} file(s)" : "Copied {$result['copied']} file(s), " . count($result['failed']) . ' failed')
                         ->body($result['failed'] === [] ? ($result['copied'] > 0 ? 'Restart the shards (Power → Rolling restart) to load them.' : 'Every shard already had the same files.') : implode('; ', $result['failed']))

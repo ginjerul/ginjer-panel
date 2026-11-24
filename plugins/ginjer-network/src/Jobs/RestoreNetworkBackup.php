@@ -30,6 +30,7 @@ class RestoreNetworkBackup implements ShouldQueue
         Busy::start($group->network_id, 60);
         try {
             $problems = $backups->restore($group, $user);
+            \Ginjer\Network\Services\Activity\NetworkLog::record($group->network, 'restore', "Restored to \"{$group->name}\"", $problems === [] ? null : implode(' ', $problems), $problems === [] ? 'warning' : 'danger', $user->id);
             Notification::make()
                 ->title($problems === [] ? "Restoring {$group->network->name} to \"{$group->name}\"" : "Restoring {$group->network->name} partly failed")
                 ->body(($problems === [] ? 'Every server is restoring. Start the network when they\'re done (their state shows "restoring" until then).' : implode(' ', $problems)))
@@ -37,6 +38,7 @@ class RestoreNetworkBackup implements ShouldQueue
                 ->sendToDatabase($user);
         } catch (Throwable $exception) {
             report($exception);
+            \Ginjer\Network\Services\Activity\NetworkLog::record($group->network, 'restore', 'Restore failed', $exception->getMessage(), 'danger', $user->id);
             Notification::make()->title("Restoring {$group->network->name} failed")->body($exception->getMessage())->danger()->sendToDatabase($user);
         } finally {
             Busy::stop($group->network_id);

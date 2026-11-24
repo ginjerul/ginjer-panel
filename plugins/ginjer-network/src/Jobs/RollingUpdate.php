@@ -11,6 +11,7 @@ use Ginjer\Network\Enums\MemberRole;
 use Ginjer\Network\Filament\Admin\Resources\Networks\NetworkResource;
 use Ginjer\Network\Models\Network;
 use Ginjer\Network\Models\NetworkMember;
+use Ginjer\Network\Services\Activity\NetworkLog;
 use Ginjer\Network\Services\Ops\Artifacts;
 use Ginjer\Network\Services\Ops\Busy;
 use Ginjer\Network\Services\Ops\RollingPlan;
@@ -140,6 +141,8 @@ class RollingUpdate implements ShouldQueue
                 }
             }
 
+            NetworkLog::record($network, $local === [] ? 'restart' : 'update', ($local === [] ? 'Rolling restart' : 'Rolling update') . ' finished' . ($failed === [] ? '' : ' with problems'),
+                ($failed === [] ? '' : 'Problems: ' . implode('; ', $failed) . '. ') . implode('; ', $done) . '.', $failed === [] ? 'success' : 'warning', $user->id);
             Notification::make()
                 ->title(($local === [] ? 'Rolling restart' : 'Rolling update') . " of {$network->name} finished" . ($failed === [] ? '' : ' with problems'))
                 ->body(($failed === [] ? '' : 'Problems: ' . implode('; ', $failed) . '. ') . implode('; ', $done) . '.')
@@ -148,6 +151,7 @@ class RollingUpdate implements ShouldQueue
                 ->sendToDatabase($user);
         } catch (Throwable $exception) {
             report($exception);
+            NetworkLog::record($network, 'update.failed', ($local === [] ? 'Rolling restart' : 'Rolling update') . ' stopped', $exception->getMessage(), 'danger', $user->id);
             Notification::make()
                 ->title(($local === [] ? 'Rolling restart' : 'Rolling update') . " of {$network->name} stopped")
                 ->body($exception->getMessage() . ($done === [] ? '' : ' Done before that: ' . implode('; ', $done) . '.'))

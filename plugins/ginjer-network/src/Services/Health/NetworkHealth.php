@@ -85,6 +85,14 @@ class NetworkHealth
     {
         $shards = $this->shards($network);
         $this->record($network, $shards);
+        // where players are, for the rebalancer
+        rescue(function () use ($network, $shards) {
+            $presence = $this->nodes->presence($network);
+            if ($presence['players'] !== []) {
+                \Ginjer\Network\Services\Rebalance\LoadSampler::store($network, \Ginjer\Network\Services\Rebalance\LoadSampler::cells(
+                    $presence['players'], $network->world ?: 'world', array_map(fn ($s) => $s['mspt'], $shards)));
+            }
+        }, report: false);
         $key = "ginjer-network:health:{$network->id}";
         $result = HealthRules::evaluate(
             array_map(fn ($s) => ['state' => $s['state'], 'reporting' => $s['reporting'], 'tps' => $s['tps'], 'mspt' => $s['mspt']], $shards),
@@ -94,6 +102,9 @@ class NetworkHealth
         );
         Cache::forever($key, $result['memory']);
 
+        foreach ($result['alerts'] as $alert) {
+            \Ginjer\Network\Services\Activity\NetworkLog::record($network, 'health.' . ($alert['kind'] ?? 'other'), $alert['title'], $alert['body'], $alert['level'], null);
+        }
         if ($network->health_alerts && $result['alerts'] !== []) {
             $admins = User::query()->whereHas('roles', fn ($q) => $q->where('name', Role::ROOT_ADMIN))->get();
             foreach ($result['alerts'] as $alert) {
@@ -105,6 +116,12 @@ class NetworkHealth
                         ->actions([Action::make('open')->label('Open network')->url(NetworkResource::getUrl('edit', ['record' => $network], panel: 'admin'))])
                         ->sendToDatabase($admin), report: false);
                 }
+            }
+        }
+        // a shard went down or froze: find out why while its log still says so
+        foreach ($result['alerts'] as $alert) {
+            if (in_array($alert['kind'] ?? null, ['down', 'silent'], true) && ($member = $network->members->firstWhere('shard_name', $alert['shard']))) {
+                \Ginjer\Network\Jobs\AnalyzeCrash::dispatch($member->server_id, $network->id, $alert['shard'], $alert['kind']);
             }
         }
         // catch the lag while it's happening: profile with spark if it's installed

@@ -27,6 +27,16 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 - **Backups:** saves Nodes and the worlds and snapshots Redis, then backs up every server at the same moment as one network backup. Restore puts every server back to that moment. It keeps the last few network backups and can run every few hours.
 - **Config sync:** pick plugin config files and folders (say `plugins/Essentials/config.yml` and `plugins/Essentials/messages`), edit them on one shard (the Nodes leader unless you choose another), and copy them to every other shard in one click. It shows which shards have a different or missing copy first, and keeps each replaced copy as `<file>.ginjer-old`. Files that must differ per shard are never copied: `reef.yml`, `server.properties`, anything under `plugins/Nodes`, worlds, logs and jars.
 - **Database:** one MySQL database for the whole network (a normal Pelican database on the leader's server, from one of your database hosts), so plugins that keep data, such as LuckPerms ranks or an economy, see the same data on every shard. **Set up LuckPerms** points LuckPerms on every shard and on the proxy at it, with changes sent between them over the network's Redis. The page shows the connection details for other plugins.
+- **Console:** every shard's and the proxy's log in one place, merged by time and labelled by server, refreshed every 5 seconds. **Run a command** sends one command to any of them at once.
+- **Players:** who is online on which shard, with ping and position (read from what Nodes writes to Redis). Message, kick or ban from there. A ban goes to every shard, because Minecraft keeps bans per server, and the ban list shows any shard that is missing one.
+- **Activity:** who restarted, updated, synced, banned or changed what, plus every alert and crash, kept for 90 days.
+- **Discord:** paste a channel webhook under **Discord** on the network. It posts alerts (a shard down, lag, crashes, failed updates and backups), or everything in the activity log. It never pings anyone.
+- **Crash detective:** when a shard goes down or freezes, the panel reads its log and any new crash report and says why: out of memory, a frozen main thread (Paper's watchdog dump), an error in a named plugin, or a Minecraft crash. Plugins are matched by their package names in the stack trace. The answer goes with the alert.
+- **Maintenance mode** (Power menu): only the players you list can join. Every shard turns its whitelist on, everyone else online is kicked with a message, and the proxy shows a maintenance MOTD. Ending it puts everything back, and a shard that had its own whitelist keeps it.
+- **Plugin updates:** checks every plugin on the shards against Modrinth (by the jar's exact file), Hangar and SpigotMC (by name), and flags shards whose copy differs from the others. Modrinth and Hangar updates install on every shard in one click; SpigotMC ones link to the page.
+- **Rebalance shards:** the panel records every minute where players are (time on a lagging shard counts more). From the last week it proposes new borders that share the load evenly, and shows them on a map next to today's. Each shard keeps the area nearest its old one. Applying it stops the network for a few minutes. It copies the land that changes hands from its old shard's world files to its new shard's, since every shard keeps its own copy of the world. Then it pushes the new borders and starts everything again. Changed world files are kept as `.ginjer-old`.
+- **Test copy** (More menu): new servers on the same nodes with a copy of every server's files as they are now, joined in a new network with its own Redis and an empty database of its own. Try updates and plugins there first. It starts stopped, with alerts, Discord and backups off.
+- **Staff roles:** under Admin → Roles, **Network** has permissions for viewing, controlling (power, updates, maintenance, backups), the console, players, and changing settings. Moderators can get the console and the player list without being root admins.
 - **Promote now:** runs `nda shards promote` on a follower when the leader is down.
 - **Velocity servers:** the `[servers]` lines for the proxy's `velocity.toml`. With a proxy in the network, **Push config** writes them for you. It also keeps every comment, puts the leader first in `try`, drops the sample forced hosts that would stop Velocity from starting, sets forwarding to `modern`, and gives every shard the proxy's `forwarding.secret` (through the egg's `VELOCITY_SECRET` and in `paper-global.yml`). Shards on the proxy's node that listen on every interface are reached through Wings' Docker gateway (`GINJER_NETWORK_DOCKER_GATEWAY`, default `172.18.0.1`), and shards on other nodes through their node's address.
 
@@ -41,6 +51,10 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 | ![Status with TPS, tick time, players, memory and CPU; one lagging shard in red](docs/screenshots/network-status.png) | ![Update dialog: Reef, Nodes and GinjerMap, where they come from, and the wait between shards](docs/screenshots/network-update.png) |
 | **Plugins on every shard** | **Network backups** |
 | ![One switch per plugin for all shards; spark is off on one of three](docs/screenshots/network-plugins.png) | ![A network backup of three servers, ready to restore](docs/screenshots/network-backups.png) |
+| **Network console** | **Players** |
+| ![Every shard's log merged by time, an error in red](docs/screenshots/network-console.png) | ![Players online on each shard with ping and position](docs/screenshots/network-players.png) |
+| **Activity** | **Rebalance shards** |
+| ![Alerts, a crash explained, and who did what](docs/screenshots/network-activity.png) | ![Load per shard now and with new borders, and a map of where players play](docs/screenshots/network-rebalance.png) |
 | **Config sync** | **Shared database** |
 | ![Config sync: three plugin files, one different and two missing on other shards; reef.yml refused](docs/screenshots/network-config-sync.png) | ![The network database's connection details after LuckPerms was set up on three shards](docs/screenshots/network-database.png) |
 
@@ -160,6 +174,7 @@ php plugins/ginjer-network/tests/optimizer-test.php <vendor/autoload.php> [path/
 php plugins/ginjer-network/tests/velocity-test.php
 php plugins/ginjer-network/tests/health-test.php
 php plugins/ginjer-network/tests/tools-test.php <vendor/autoload.php>
+php plugins/ginjer-network/tests/network-tools-test.php <vendor/autoload.php>
 ```
 
 

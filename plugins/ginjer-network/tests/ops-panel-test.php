@@ -79,6 +79,26 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
         return Http::response(str_ends_with($url, '/1') ? 'NEW-NODES' : 'NEW-MAP', 200);
     }
 
+    // Discord
+    if (str_starts_with($url, 'https://discord.com/api/webhooks/')) {
+        $log[] = 'discord ' . ($request->data()['embeds'][0]['title'] ?? '');
+
+        return Http::response('', 204);
+    }
+    // Modrinth by file hash (plugin updates)
+    if ($url === 'https://api.modrinth.com/v2/version_files' || $url === 'https://api.modrinth.com/v2/version_files/update') {
+        $known = $GLOBALS['coolSha'] ?? '';
+        if (!in_array($known, $request->data()['hashes'] ?? [], true)) {
+            return Http::response([], 200);
+        }
+
+        return Http::response(str_ends_with($url, '/update')
+            ? [$known => ['id' => 'v2', 'project_id' => 'cool', 'version_number' => '1.1', 'files' => [['primary' => true, 'url' => 'https://cdn.modrinth.com/data/cool/versions/v2/Cool-1.1.jar', 'filename' => 'Cool-1.1.jar']]]]
+            : [$known => ['id' => 'v1', 'project_id' => 'cool', 'version_number' => '1.0']], 200);
+    }
+    if ($url === 'https://cdn.modrinth.com/data/cool/versions/v2/Cool-1.1.jar') {
+        return Http::response('COOL-1.1', 200);
+    }
     // Modrinth
     if (str_starts_with($url, 'https://api.modrinth.com/v2/project/chunky/version')) {
         return Http::response(($q['loaders'] ?? '') === '["paper"]' ? [
@@ -108,6 +128,7 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
     }
     $uuid = $m[1];
     $rest = $m[2] ?? '';
+    $names[$uuid] ??= 'new-' . substr($uuid, 0, 4); // servers the code under test created
     $data = $request->data();
     switch (true) {
         case $rest === '' && $request->method() === 'GET':
@@ -118,7 +139,27 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
 
             return $ok('', 204);
         case $rest === '/commands':
+            if (($state[$uuid] ?? 'offline') !== 'running') {
+                return $ok(['errors' => [['detail' => 'Server must be online in order to send commands.']]], 502);
+            }
             $log[] = "command {$names[$uuid]} " . implode(' + ', $data['commands']);
+
+            return $ok('', 204);
+        case $rest === '/files/compress':
+            $archive = $data['name'] . '.tar.gz';
+            $fs[$uuid][$archive] = 'ARCHIVE:' . $uuid;
+            $log[] = "compress {$names[$uuid]} " . implode(',', $data['files']);
+
+            return $ok(['name' => $archive]);
+        case $rest === '/files/decompress':
+            $archive = trim($data['root'] . '/' . $data['file'], '/');
+            $from = $GLOBALS['archives'][$archive] ?? null;
+            foreach ($from ? $fs[$from] : [] as $file => $content) {
+                if (!str_starts_with($file, 'logs/') && !str_ends_with($file, '.tar.gz')) {
+                    $fs[$uuid][$file] = $content;
+                }
+            }
+            $log[] = "decompress {$names[$uuid]} $archive";
 
             return $ok('', 204);
         case $rest === '/files/list-directory':
@@ -148,7 +189,12 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
 
             return isset($fs[$uuid][$file]) ? $ok($fs[$uuid][$file]) : $ok(['error' => 'not found'], 404);
         case $rest === '/files/pull':
-            $fs[$uuid][trim($data['root'], '/') . '/' . $data['file_name']] = 'downloaded from ' . $data['url'];
+            $fs[$uuid][trim(trim($data['root'], '/') . '/' . $data['file_name'], '/')] = 'downloaded from ' . $data['url'];
+            if (str_contains($data['url'], '/download/file?token=')) {
+                // a signed link to another server's archive: remember whose files it holds
+                $claims = json_decode(base64_decode(strtr(explode('.', explode('token=', $data['url'])[1])[1], '-_', '+/')), true);
+                $GLOBALS['archives'][$data['file_name']] = $claims['server_uuid'];
+            }
             $log[] = "pull {$names[$uuid]} {$data['url']}";
 
             return $ok('', 204);
@@ -318,11 +364,32 @@ try {
     check('health: Wings resources per shard', $shards['west']['memory_mb'] === 3072 && $shards['west']['memory_limit_mb'] === 8192 && $shards['west']['cpu'] === 87.5);
     check('health: Redis down means not reporting', $shards['west']['reporting'] === false);
     $before = DB::table('notifications')->where('notifiable_id', $user->id)->count();
+    $network->update(['discord_webhook' => 'https://discord.com/api/webhooks/123/abc-DEF', 'discord_level' => 'alerts']);
+    $fs[$east->uuid]['logs/latest.log'] = "[10:00:00 INFO]: Done\n[10:04:00 ERROR]: Could not pass event BlockBreakEvent to Essentials v2.20\njava.lang.IllegalStateException: broken\n";
     $health->check($network);       // remembers everything as running
     $state[$east->uuid] = 'offline';
+    $log = [];
     $health->check($network);       // east went down
     $alerts = DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->slice($before);
     check('health: root admins are told a shard went down', $alerts->contains(fn ($d) => str_contains($d, 'ops-net: east is down')), $alerts->toJson());
+    $events = \Ginjer\Network\Models\NetworkEvent::where('network_id', $network->id)->get();
+    check('activity: the alert is in the network\'s activity log', $events->contains(fn ($e) => $e->kind === 'health.down' && $e->title === 'east is down' && $e->level === 'danger' && $e->user_id === null));
+    $crash = $events->firstWhere('kind', 'crash');
+    check('crash detective: says why east went down and which plugin', $crash !== null && str_contains($crash->title, 'east went down: Essentials threw an error while handling BlockBreakEvent')
+        && str_contains((string) $crash->body, 'IllegalStateException'), (string) $crash?->title);
+    check('crash detective: root admins get it too', DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->contains(fn ($d) => str_contains($d, 'Essentials threw an error')));
+    check('discord: alerts are posted', in_array('discord east is down', $log, true) && collect($log)->contains(fn ($l) => str_starts_with($l, 'discord east went down: Essentials')), json_encode($log));
+    $log = [];
+    \Ginjer\Network\Services\Activity\NetworkLog::record($network, 'power', 'Start network (5 servers)');
+    check('discord: plain actions aren\'t posted when it\'s set to alerts', !collect($log)->contains(fn ($l) => str_starts_with($l, 'discord')));
+    $network->update(['discord_level' => 'all']);
+    \Ginjer\Network\Services\Activity\NetworkLog::record($network, 'power', 'Stop network (5 servers)', null, 'info', $user->id);
+    check('discord: everything when set to all', in_array('discord Stop network (5 servers)', $log, true));
+    $payload = \Ginjer\Network\Jobs\PostToDiscord::payload('ops-net', 'x', 'y', 'danger', 'admin');
+    check('discord: never pings anyone', $payload['allowed_mentions'] === ['parse' => []] && $payload['embeds'][0]['color'] === 0xEF4444 && $payload['embeds'][0]['footer']['text'] === 'ops-net · by admin');
+    check('discord: only Discord webhook links', \Ginjer\Network\Services\Activity\NetworkLog::validWebhook('https://discord.com/api/webhooks/1/x_Y-z') && !\Ginjer\Network\Services\Activity\NetworkLog::validWebhook('https://evil.example/api/webhooks/1/x'));
+    $network->update(['discord_webhook' => null]);
+    unset($fs[$east->uuid]['logs/latest.log']);
     Busy::start($network->id);
     $state[$west->uuid] = 'offline';
     $count = DB::table('notifications')->where('notifiable_id', $user->id)->count();
@@ -434,6 +501,182 @@ try {
     check('database: the old LuckPerms config is kept', ($fs[$east->uuid]['plugins/LuckPerms/config.yml.ginjer-old'] ?? '') === $lp);
     check('database: setting up twice changes nothing', $results['east']['message'] === 'already set up');
     check('database: details for other plugins', \Ginjer\Network\Services\Ops\NetworkDatabase::details($db->fresh('host'))['jdbc'] === 'jdbc:mysql://10.0.0.5:3306/s' . $west->id . '_network');
+
+    // ---------------- console
+    $state[$west->uuid] = 'running';
+    $state[$east->uuid] = 'running';
+    $state[$proxy->uuid] = 'running';
+    $state[$north->uuid] = 'offline';
+    $fs[$west->uuid]['logs/latest.log'] = "[09:00:01 INFO]: west starting\n[09:00:05 WARN]: west warning\n";
+    $fs[$east->uuid]['logs/latest.log'] = "[09:00:03 INFO]: east starting\n";
+    $fs[$proxy->uuid]['logs/latest.log'] = "[09:00:04 INFO]: proxy up\n";
+    $console = app(\Ginjer\Network\Services\Ops\NetworkConsole::class);
+    $out = $console->lines($network->refresh());
+    check('console: every shard and the proxy, in time order', array_map(fn ($l) => $l['server'] . ':' . substr($l['text'], 1, 8), $out['lines']) === ['west:09:00:01', 'east:09:00:03', 'proxy:09:00:04', 'west:09:00:05'], json_encode($out));
+    check('console: a server without a log says so', ($out['errors']['north'] ?? '') === 'no log yet');
+    check('console: only the chosen servers', array_unique(array_column($console->lines($network, 300, ['east'])['lines'], 'server')) === ['east']);
+    $log = [];
+    $sent = $console->send($network, '/say hi', ['west', 'east', 'north']);
+    check('console: a command goes to the chosen running servers', $sent['sent'] === ['east', 'west'] && $sent['failed'] === ['north'] && in_array('command west say hi', $log, true), json_encode([$sent, $log]));
+    check('console: in the network\'s targets, shards then the proxy', array_keys(\Ginjer\Network\Services\Ops\NetworkConsole::targets($network)) === ['east', 'north', 'west', 'proxy']);
+
+    // ---------------- maintenance
+    foreach ([$west, $east, $north] as $s) {
+        $fs[$s->uuid]['server.properties'] = "white-list=false\nserver-port=25565\n";
+    }
+    $fs[$east->uuid]['server.properties'] = "white-list=true\nserver-port=25566\n"; // east already uses a whitelist
+    $fs[$proxy->uuid]['velocity.toml'] = "bind = \"0.0.0.0:25577\"\nmotd = \"<#09add3>A Velocity Server\"\nshow-max-players = 500\n[servers]\nwest = \"10.2.0.1:25565\"\n";
+    $network->update(['maintenance_allow' => "Steve\nAlex, bad;name", 'maintenance_motd' => '<red>Fixing things']);
+    check('maintenance: only real names are allowed', \Ginjer\Network\Services\Ops\Maintenance::allowed($network) === ['Steve', 'Alex']);
+    $log = [];
+    $report = app(\Ginjer\Network\Services\Ops\Maintenance::class)->enable($network->refresh());
+    check('maintenance: running shards whitelist the allowed players and turn it on', in_array('command west whitelist add Steve + whitelist add Alex + whitelist on', $log, true), json_encode($log));
+    check('maintenance: an offline shard starts with the whitelist on', str_contains($fs[$north->uuid]['server.properties'], 'white-list=true'));
+    check('maintenance: the proxy shows the maintenance MOTD and reloads', str_contains($fs[$proxy->uuid]['velocity.toml'], 'motd = "<red>Fixing things"') && in_array('command proxy velocity reload', $log, true)
+        && $fs[$proxy->uuid]['velocity.toml.ginjer-motd'] === 'motd = "<#09add3>A Velocity Server"', $fs[$proxy->uuid]['velocity.toml']);
+    check('maintenance: the network knows', $network->refresh()->maintenance === true);
+    app(\Ginjer\Network\Services\Ops\Maintenance::class)->enable($network); // twice: the original MOTD must survive
+    $log = [];
+    $report = app(\Ginjer\Network\Services\Ops\Maintenance::class)->disable($network);
+    check('maintenance: over: whitelists off, but east keeps its own', in_array('command west whitelist off', $log, true) && !collect($log)->contains(fn ($l) => str_starts_with($l, 'command east whitelist')), json_encode([$log, $report]));
+    check('maintenance: over: the original MOTD is back', str_contains($fs[$proxy->uuid]['velocity.toml'], 'motd = "<#09add3>A Velocity Server"') && !isset($fs[$proxy->uuid]['velocity.toml.ginjer-motd']));
+    check('maintenance: over: the offline shard too, and the markers are gone', str_contains($fs[$north->uuid]['server.properties'], 'white-list=false') && !isset($fs[$west->uuid][\Ginjer\Network\Services\Ops\Maintenance::MARKER]));
+
+    // ---------------- players
+    $fs[$west->uuid]['banned-players.json'] = json_encode([['uuid' => 'u1', 'name' => 'Griefer', 'created' => '2026-11-20 10:00:00 +0000', 'source' => 'Server', 'expires' => 'forever', 'reason' => 'griefing']]);
+    $fs[$east->uuid]['banned-players.json'] = json_encode([['uuid' => 'u1', 'name' => 'Griefer', 'created' => '2026-11-20 10:00:00 +0000', 'source' => 'Server', 'expires' => 'forever', 'reason' => 'griefing'],
+        ['uuid' => 'u2', 'name' => 'Spammer', 'created' => '2026-11-22 10:00:00 +0000', 'source' => 'admin', 'expires' => 'forever', 'reason' => 'spam']]);
+    $bans = collect(app(\Ginjer\Network\Services\Players\PlayerAdmin::class)->bans($network))->keyBy('name');
+    check('players: bans from every shard, newest first', $bans->keys()->all() === ['Spammer', 'Griefer'], $bans->toJson());
+    check('players: a ban missing on some shards is shown', collect($bans['Spammer']['missing'])->sort()->values()->all() === ['north', 'west'] && $bans['Griefer']['missing'] === ['north'], $bans->toJson());
+    $log = [];
+    $result = app(\Ginjer\Network\Services\Players\PlayerAdmin::class)->ban($network, 'Spammer', "spam\nop me");
+    check('players: a network ban is sent to every running shard', collect($result['done'])->sort()->values()->all() === ['east', 'west'] && $result['failed'] === ['north'] && in_array('command west ban Spammer spam op me', $log, true), json_encode([$result, $log]));
+    $threw = false;
+    try {
+        app(\Ginjer\Network\Services\Players\PlayerAdmin::class)->kick($network, 'x; stop', 'west', '');
+    } catch (InvalidArgumentException) {
+        $threw = true;
+    }
+    check('players: a bad name never reaches a console', $threw);
+
+    // ---------------- plugin updates
+    $jar = tempnam(sys_get_temp_dir(), 'cool');
+    $zip = new ZipArchive();
+    $zip->open($jar, ZipArchive::OVERWRITE);
+    $zip->addFromString('plugin.yml', "name: Cool\nversion: 1.0\nmain: x.Y\n");
+    $zip->close();
+    $coolJar = (string) file_get_contents($jar);
+    @unlink($jar);
+    $GLOBALS['coolSha'] = sha1($coolJar);
+    $fs[$west->uuid]['plugins/Cool-1.0.jar'] = $coolJar;
+    $fs[$east->uuid]['plugins/Cool-1.0.jar'] = $coolJar;
+    $fs[$north->uuid]['plugins/Cool-1.0.jar'] = $coolJar . 'x'; // a different build on north
+    $fs[$west->uuid]['version_history.json'] = json_encode(['currentVersion' => 'git-Reef-12 (MC: 1.21.4)']);
+    $updates = app(\Ginjer\Network\Services\Ops\PluginUpdates::class);
+    $rows = collect($updates->check($network))->keyBy('file');
+    check('plugin updates: Reef, Nodes and GinjerMap are left to Update shards', !$rows->has('nodes-0.1.1.jar') && !$rows->has('ginjermap-0.1.1.jar') && $rows->has('Essentials.jar'), $rows->keys()->toJson());
+    $cool = $rows['Cool-1.0.jar'] ?? [];
+    check('plugin updates: found on Modrinth by its file, with the newer version', ($cool['name'] ?? '') === 'Cool' && $cool['version'] === '1.0' && $cool['source'] === 'Modrinth' && $cool['latest'] === '1.1' && $cool['status'] === 'update', json_encode($cool));
+    check('plugin updates: a shard with a different copy is flagged', $cool['same'] === false && $rows['Essentials.jar']['same'] === true);
+    check('plugin updates: unknown plugins say so', $rows['Essentials.jar']['status'] === 'unknown' && $rows['Essentials.jar']['source'] === null);
+    $result = $updates->install($network, $cool, $user);
+    check('plugin updates: installed on every shard that had it, the old jar kept', $result['done'] === ['east', 'north', 'west'] || $result['done'] === ['west', 'east', 'north'] || count($result['done']) === 3, json_encode($result));
+    check('plugin updates: the new jar is in place', ($fs[$west->uuid]['plugins/Cool-1.1.jar'] ?? '') === 'COOL-1.1' && !isset($fs[$west->uuid]['plugins/Cool-1.0.jar']) && isset($fs[$west->uuid]['plugins/Cool-1.0.jar.ginjer-old']));
+
+    // ---------------- rebalance: moving land between shards
+    $payload = fn (string $data) => pack('N', strlen($data) + 1) . chr(2) . $data;
+    $A = \Ginjer\Network\Services\Rebalance\Anvil::class;
+    // r.-1.0: chunk x -32..-1. West owns x < 0 now; after, only x < -256 (chunk x < -16)
+    $fs[$west->uuid]['world/region/r.-1.0.mca'] = $A::write([5 => ['payload' => $payload('west far chunk'), 'time' => 1], 20 => ['payload' => $payload('west near chunk, built on'), 'time' => 2]]);
+    $fs[$west->uuid]['world/entities/r.-1.0.mca'] = $A::write([20 => ['payload' => $payload('west near entities'), 'time' => 2]]);
+    $fs[$east->uuid]['world/region/r.-1.0.mca'] = $A::write([20 => ['payload' => $payload('east stale copy'), 'time' => 1], 21 => ['payload' => $payload('east only'), 'time' => 1]]);
+    $before = "- {server: west, min-x: -30000000, min-z: -30000000, max-x: 0, max-z: 30000000}\n- {server: east, min-x: 0, min-z: -30000000, max-x: 30000000, max-z: 30000000}\n";
+    $after = "- {server: west, min-x: -30000000, min-z: -30000000, max-x: -256, max-z: 30000000}\n- {server: east, min-x: -256, min-z: -30000000, max-x: 30000000, max-z: 30000000}\n";
+    $shardServers = ['west' => $west, 'east' => $east];
+    $mover = app(\Ginjer\Network\Services\Rebalance\ChunkMover::class);
+    $plan = $mover->plan($shardServers, 'world', new \Ginjer\Network\Services\Rebalance\ShardMap(\Ginjer\Network\Services\RegionList::parse($before)), new \Ginjer\Network\Services\Rebalance\ShardMap(\Ginjer\Network\Services\RegionList::parse($after)));
+    check('rebalance: the chunks that change hands are found', array_keys($plan['moves']) === ['east'] && count($plan['moves']['east']['r.-1.0.mca']['west']) === 16 * 32 && $plan['files'] === 1, json_encode(array_map(fn ($f) => array_map(fn ($s) => array_map('count', $s), $f), $plan['moves'])));
+    $copied = $mover->apply($shardServers, 'world', $plan['moves']);
+    $eastChunks = $A::read($fs[$east->uuid]['world/region/r.-1.0.mca']);
+    check('rebalance: the old owner\'s chunk replaces the stale copy', $copied === 1 && $eastChunks[20]['payload'] === $payload('west near chunk, built on'));
+    check('rebalance: chunks that don\'t move are left alone', $eastChunks[21]['payload'] === $payload('east only') && !isset($eastChunks[5]));
+    check('rebalance: entities move with the land', $A::read($fs[$east->uuid]['world/entities/r.-1.0.mca'])[20]['payload'] === $payload('west near entities'));
+    check('rebalance: the changed file is kept as .ginjer-old', isset($fs[$east->uuid]['world/region/r.-1.0.mca.ginjer-old']) && !isset($fs[$west->uuid]['world/region/r.-1.0.mca.ginjer-old']));
+
+    // the whole job: stop, move, new borders, push, start again
+    $network->update(['regions' => "- {server: west, min-x: -30000000, min-z: -30000000, max-x: 0, max-z: 30000000}\n- {server: east, min-x: 0, min-z: -30000000, max-x: 30000000, max-z: 30000000}\n- {server: north, min-x: 0, min-z: 30000000, max-x: 1000, max-z: 30000016}\n", 'world' => 'world']);
+    $state[$west->uuid] = 'running';
+    $state[$east->uuid] = 'running';
+    $state[$north->uuid] = 'offline';
+    $state[$proxy->uuid] = 'running';
+    $fs[$east->uuid]['world/region/r.-1.0.mca'] = $A::write([20 => ['payload' => $payload('east stale copy'), 'time' => 1]]);
+    $log = [];
+    $newRegions = "- {server: west, min-x: -30000000, min-z: -30000000, max-x: -256, max-z: 30000000}\n- {server: east, min-x: -256, min-z: -30000000, max-x: 30000000, max-z: 30000000}\n- {server: north, min-x: 0, min-z: 30000000, max-x: 1000, max-z: 30000016}\n";
+    app()->call([new \Ginjer\Network\Jobs\RebalanceNetwork($network->id, $newRegions, $user->id), 'handle']);
+    $stopProxy = array_search('power proxy stop', $log, true);
+    $firstCopy = collect($log)->search(fn ($l) => str_starts_with($l, 'write east world/region'));
+    check('rebalance job: proxy and shards stopped before any world file is touched', $stopProxy !== false && $firstCopy !== false && $stopProxy < $firstCopy && array_search('power west stop', $log, true) < $firstCopy, json_encode($log));
+    check('rebalance job: the new borders are saved', $network->refresh()->regions === $newRegions);
+    check('rebalance job: the land moved', $A::read($fs[$east->uuid]['world/region/r.-1.0.mca'])[20]['payload'] === $payload('west near chunk, built on'));
+    check('rebalance job: what was running runs again, leader first, proxy last', $state[$west->uuid] === 'running' && $state[$east->uuid] === 'running' && $state[$proxy->uuid] === 'running' && $state[$north->uuid] === 'offline'
+        && array_search('power west start', $log, true) < array_search('power east start', $log, true) && array_search('power east start', $log, true) < array_search('power proxy start', $log, true), json_encode($log));
+    check('rebalance job: in the activity log', \Ginjer\Network\Models\NetworkEvent::where('network_id', $network->id)->where('kind', 'rebalance')->where('level', 'success')->exists());
+    $log = [];
+    app()->call([new \Ginjer\Network\Jobs\RebalanceNetwork($network->id, "- {server: nobody, min-x: 0, min-z: 0, max-x: 16, max-z: 16}\n", $user->id), 'handle']);
+    check('rebalance job: invalid borders change nothing', $network->refresh()->regions === $newRegions && !collect($log)->contains(fn ($l) => str_contains($l, ' stop')), json_encode($log));
+
+    // load sampling into the database
+    \Ginjer\Network\Services\Rebalance\LoadSampler::store($network, ['0:0' => 2.0, '-1:3' => 1.0]);
+    \Ginjer\Network\Services\Rebalance\LoadSampler::store($network, ['0:0' => 1.5]);
+    $points = collect(\Ginjer\Network\Services\Rebalance\LoadSampler::points($network))->keyBy(fn ($p) => $p[0] . ':' . $p[1]);
+    check('load: minutes add up per square, at its centre', $points->count() === 2 && $points['64:64'][2] === 3.5 && $points['-64:448'][2] === 1.0, $points->toJson());
+
+    // ---------------- staff permissions
+    app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions(); // a cache from an earlier, rolled-back run
+    foreach (\Ginjer\Network\Policies\NetworkPolicy::PERMISSIONS as $permission) {
+        \Spatie\Permission\Models\Permission::findOrCreate("$permission network", 'web');
+    }
+    app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions();
+    $staffRole = Role::create(['name' => 'Moderator ' . Str::random(4), 'guard_name' => 'web']);
+    $staffRole->givePermissionTo(['viewList network', 'view network', 'players network']);
+    $staff = User::forceCreate(['uuid' => Uuid::uuid4()->toString(), 'username' => 'mod_' . Str::random(6), 'email' => Str::random(10) . '@example.com',
+        'password' => bcrypt('x'), 'language' => 'en', 'oauth' => [], 'external_id' => null, 'is_managed_externally' => false]);
+    $staff->syncRoles($staffRole);
+    app(\Spatie\Permission\PermissionRegistrar::class)->forgetCachedPermissions();
+    $staff = $staff->fresh();
+    check('staff: network permissions are listed for roles', in_array('console', Role::getPermissionList()['network'] ?? [], true));
+    check('staff: a moderator sees the network and its players', $staff->can('viewAny', Network::class) && $staff->can('view', $network) && $staff->can('players', $network));
+    check('staff: but can\'t restart, change or delete it', !$staff->can('control', $network) && !$staff->can('update', $network) && !$staff->can('console', $network) && !$staff->can('delete', $network));
+    check('staff: root admins can do everything', $user->can('control', $network) && $user->can('console', $network) && $user->can('update', $network));
+
+    // ---------------- test copy
+    Server::created(function (Server $server) {
+        $server->forceFill(['status' => null])->saveQuietly(); // Wings finishes a skip-scripts install at once
+    });
+    foreach (range(25600, 25610) as $port) {
+        Allocation::forceCreate(['ip' => '10.2.0.1', 'port' => $port, 'node_id' => $node->id]);
+    }
+    $fs[$west->uuid]['world/level.dat'] = 'WEST-WORLD';
+    $fs[$redis->uuid]['dump.rdb'] = 'REDIS-DATA';
+    $network->update(['shared_player_data_folder' => '/shared/players', 'discord_webhook' => 'https://discord.com/api/webhooks/123/abc', 'health_alerts' => true]);
+    $before = Server::count();
+    $log = [];
+    app()->call([new \Ginjer\Network\Jobs\CopyNetwork($network->id, ['name' => 'ops-net test', 'memory_percent' => 50], $user->id), 'handle']);
+    $copy = Network::where('test_of_network_id', $network->id)->first();
+    check('test copy: a new network, marked as a copy', $copy !== null && $copy->name === 'ops-net test', (string) DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->first(fn ($d) => str_contains($d, 'Copying ops-net failed')));
+    if ($copy) {
+        $copyServers = $copy->load('members.server')->members->mapWithKeys(fn ($m) => [($m->shard_name ?? $m->role->value) => $m->server]);
+        check('test copy: a new server for every server, with half the memory', Server::count() === $before + 5 && $copyServers['west']->memory === 2048 && $copyServers['west']->id !== $west->id);
+        check('test copy: the same roles, shard names and leader', $copy->members->where('role', MemberRole::Shard)->pluck('shard_name')->sort()->values()->all() === ['east', 'north', 'west'] && $copy->leader()?->shard_name === 'west');
+        check('test copy: the files are copied', ($fs[$copyServers['west']->uuid]['world/level.dat'] ?? '') === 'WEST-WORLD' && ($fs[$copyServers['redis']->uuid]['dump.rdb'] ?? '') === 'REDIS-DATA');
+        check('test copy: its own Redis, not the real one', $copy->redis_port === $copyServers['redis']->allocation->port && $copy->redis_port !== $network->redis_port);
+        check('test copy: no alerts, Discord or backups from the copy', !$copy->health_alerts && blank($copy->discord_webhook) && $copy->backup_every_hours === null);
+        check('test copy: the real network\'s files are left as they were', !collect($fs[$west->uuid])->keys()->contains(fn ($k) => str_ends_with($k, '.tar.gz')) && $state[$west->uuid] === 'running');
+        check('test copy: left stopped', $copyServers->every(fn ($s) => ($state[$s->uuid] ?? 'offline') === 'offline'));
+        $note = DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->first(fn ($d) => str_contains($d, 'Test copy of ops-net is ready'));
+        check('test copy: warns about the shared player-data mount', $note !== null && str_contains($note, 'never the real network'), (string) $note);
+    }
 
     // ---------------- Chunky and spark
     $tools = app(\Ginjer\Network\Services\Ops\ServerTools::class);

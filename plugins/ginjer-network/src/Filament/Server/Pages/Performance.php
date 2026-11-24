@@ -345,7 +345,7 @@ class Performance extends Page implements HasTable
             return;
         }
         try {
-            $this->server()->send(ServerTools::chunkyCommands($world, $area));
+            \Ginjer\Network\Services\Ops\Console::run($this->server(), ServerTools::chunkyCommands($world, $area));
             Notification::make()
                 ->title('Pre-generation started')
                 ->body(sprintf('Chunky is generating x %d to %d, z %d to %d. Progress shows in the console; "chunky pause" stops it.', $area['min-x'], $area['max-x'], $area['min-z'], $area['max-z']))
@@ -362,7 +362,7 @@ class Performance extends Page implements HasTable
         }
         try {
             $previous = rescue(fn () => app(ServerTools::class)->sparkLink($this->server()), null, false);
-            $this->server()->send('spark profiler start --timeout 60');
+            \Ginjer\Network\Services\Ops\Console::run($this->server(), 'spark profiler start --timeout 60');
             \Ginjer\Network\Jobs\ProfileWithSpark::dispatch($this->server()->id, (int) user()?->id, 60, $previous);
             Notification::make()->title('Profiling for 60 seconds')->body('You\'ll get a notification with the link when spark has uploaded it.')->success()->send();
         } catch (Throwable $exception) {

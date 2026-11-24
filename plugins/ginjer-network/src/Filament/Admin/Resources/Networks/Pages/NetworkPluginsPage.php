@@ -26,10 +26,16 @@ use Illuminate\Support\HtmlString;
  */
 class NetworkPluginsPage extends Page implements HasTable
 {
+    use \Ginjer\Network\Filament\Admin\Resources\Networks\Pages\Concerns\ChecksNetworkAccess;
     use InteractsWithRecord;
     use InteractsWithTable;
 
     protected static string $resource = NetworkResource::class;
+
+    protected function networkAbility(): string
+    {
+        return 'update';
+    }
 
     /** @var list<array<string, mixed>> */
     public array $plugins = [];
@@ -44,6 +50,7 @@ class NetworkPluginsPage extends Page implements HasTable
     public function mount(int|string $record): void
     {
         $this->record = $this->resolveRecord($record);
+        $this->checkNetworkAccess();
         $this->load();
     }
 
@@ -103,6 +110,7 @@ class NetworkPluginsPage extends Page implements HasTable
                     ->label('On')
                     ->updateStateUsing(function (array $record, bool $state) {
                         $result = app(NetworkPlugins::class)->set($this->record, $record['file'], $state);
+                        \Ginjer\Network\Services\Activity\NetworkLog::record($this->record, 'plugins', $record['name'] . ($state ? ' switched on' : ' switched off') . " on {$result['changed']} shard(s)");
                         $this->pendingChanges += $result['changed'];
                         Notification::make()
                             ->title($record['name'] . ($state ? ' switched on' : ' switched off') . " on {$result['changed']} shard(s)")

@@ -12,6 +12,7 @@ use Ginjer\Network\Enums\MemberRole;
 use Ginjer\Network\Filament\Admin\Resources\Networks\NetworkResource;
 use Ginjer\Network\Models\Network;
 use Ginjer\Network\Models\NetworkMember;
+use Ginjer\Network\Services\Activity\NetworkLog;
 use Ginjer\Network\Services\NetworkPowerService;
 use Ginjer\Network\Services\NodesStatusService;
 use Ginjer\Network\Services\ShardConfigService;
@@ -23,6 +24,34 @@ use Illuminate\Support\HtmlString;
 class EditNetwork extends EditRecord
 {
     protected static string $resource = NetworkResource::class;
+
+    /** Staff with only "view network" see the page read-only. */
+    protected function authorizeAccess(): void
+    {
+        abort_unless(auth()->user()?->can('view', $this->getRecord()), 403);
+    }
+
+    private function userCan(string $ability): bool
+    {
+        return (bool) auth()->user()?->can($ability, $this->getRecord());
+    }
+
+    public function form(\Filament\Schemas\Schema $schema): \Filament\Schemas\Schema
+    {
+        return parent::form($schema)->disabled(fn () => !$this->userCan('update'));
+    }
+
+    protected function getFormActions(): array
+    {
+        return $this->userCan('update') ? parent::getFormActions() : [];
+    }
+
+    public function save(bool $shouldRedirect = true, bool $shouldSendSavedNotification = true): void
+    {
+        abort_unless($this->userCan('update'), 403);
+        parent::save($shouldRedirect, $shouldSendSavedNotification);
+        NetworkLog::record($this->getRecord(), 'settings', 'Network settings changed', implode(', ', array_diff(array_keys($this->getRecord()->getChanges()), ['updated_at'])) ?: null);
+    }
 
     protected function getHeaderActions(): array
     {
@@ -44,6 +73,7 @@ class EditNetwork extends EditRecord
                 $this->powerAction('stop', 'Stop network', 'tabler-player-stop', 'danger'),
                 $this->powerAction('kill', 'Kill network', 'tabler-alert-triangle', 'danger'),
                 Action::make('exclude_clear_items')
+                    ->visible(fn () => $this->userCan('control'))
                     ->label('Clear ground items on every shard')
                     ->icon('tabler-trash')
                     ->color('gray')
@@ -53,15 +83,55 @@ class EditNetwork extends EditRecord
                         $sent = 0;
                         foreach ($this->getRecord()->load('members.server')->membersWithRole(MemberRole::Shard) as $shard) {
                             try {
-                                $shard->server->send('reef clear all 30');
+                                \Ginjer\Network\Services\Ops\Console::run($shard->server, 'reef clear all 30');
                                 $sent++;
                             } catch (\Throwable) {
                                 // offline: nothing on the ground is ticking there anyway
                             }
                         }
+                        NetworkLog::record($this->getRecord(), 'clear', "Cleared ground items on $sent shard(s)");
                         Notification::make()->title("Clearing on $sent shard(s) in 30 seconds")->body('Shards that are offline were skipped.')->success()->send();
                     }),
+                Action::make('exclude_maintenance')
+                    ->label(fn () => $this->getRecord()->maintenance ? 'End maintenance' : 'Maintenance mode')
+                    ->icon(fn () => $this->getRecord()->maintenance ? 'tabler-door-enter' : 'tabler-barrier-block')
+                    ->color(fn () => $this->getRecord()->maintenance ? 'success' : 'warning')
+                    ->visible(fn () => $this->userCan('control'))
+                    ->modalHeading(fn () => $this->getRecord()->maintenance ? 'End maintenance?' : 'Maintenance mode')
+                    ->modalDescription(fn () => $this->getRecord()->maintenance
+                        ? 'Everyone can join again: the shards\' whitelists go off (unless a shard had its own before) and the proxy\'s MOTD comes back.'
+                        : 'Only the players below can join. Every shard turns its whitelist on, everyone else online is kicked with a message, and the proxy shows the maintenance MOTD in the server list.')
+                    ->fillForm(fn () => ['maintenance_allow' => $this->getRecord()->maintenance_allow, 'maintenance_motd' => $this->getRecord()->maintenance_motd ?: \Ginjer\Network\Services\Ops\Maintenance::DEFAULT_MOTD])
+                    ->schema(fn () => $this->getRecord()->maintenance ? [] : [
+                        \Filament\Forms\Components\Textarea::make('maintenance_allow')
+                            ->label('Players who can still join')
+                            ->rows(3)
+                            ->placeholder("Steve\nAlex")
+                            ->helperText('Minecraft names, one per line. Staff, usually.'),
+                        \Filament\Forms\Components\TextInput::make('maintenance_motd')
+                            ->label('Server list message')
+                            ->helperText('MiniMessage, like <red>Back soon!</red>'),
+                    ])
+                    ->modalSubmitActionLabel(fn () => $this->getRecord()->maintenance ? 'End maintenance' : 'Start maintenance')
+                    ->action(function (array $data, \Ginjer\Network\Services\Ops\Maintenance $maintenance) {
+                        $network = $this->getRecord();
+                        if ($network->maintenance) {
+                            $report = $maintenance->disable($network);
+                            NetworkLog::record($network, 'maintenance', 'Maintenance ended', implode("\n", $report), 'success');
+                        } else {
+                            $network->update($data);
+                            $report = $maintenance->enable($network);
+                            NetworkLog::record($network, 'maintenance', 'Maintenance started', implode("\n", $report), 'warning');
+                        }
+                        Notification::make()
+                            ->title($network->maintenance ? 'Maintenance mode is on' : 'Maintenance is over')
+                            ->body(new HtmlString('<ul>' . implode('', array_map(fn ($l) => '<li>' . e($l) . '</li>', $report)) . '</ul>'))
+                            ->color($network->maintenance ? 'warning' : 'success')
+                            ->persistent()
+                            ->send();
+                    }),
                 Action::make('exclude_rolling_restart')
+                    ->visible(fn () => $this->userCan('control'))
                     ->label('Rolling restart')
                     ->icon('tabler-refresh-dot')
                     ->color('warning')
@@ -69,11 +139,12 @@ class EditNetwork extends EditRecord
                     ->modalDescription('Restarts the shards as set under Rolling restarts on this page (by default one at a time, followers first, leader last), waiting for each to come back. The network never goes down as a whole.')
                     ->action(fn () => $this->startRolling([])),
             ])
-                ->label('Power')
+                ->label(fn () => $this->getRecord()->maintenance ? 'Power (maintenance on)' : 'Power')
                 ->icon('tabler-power')
                 ->button(),
 
             Action::make('exclude_update')
+                ->visible(fn () => $this->userCan('control'))
                 ->label('Update shards')
                 ->icon('tabler-download')
                 ->color('primary')
@@ -111,6 +182,7 @@ class EditNetwork extends EditRecord
                 }),
 
             Action::make('push_config')
+                ->visible(fn () => $this->userCan('update'))
                 ->label('Push config to shards')
                 ->tooltip('Push config to shards')
                 ->icon('tabler-upload')
@@ -121,6 +193,7 @@ class EditNetwork extends EditRecord
 
                     $problems = $service->problems($network);
                     if ($problems !== []) {
+                        NetworkLog::record($network, 'push', 'Config push refused', implode("\n", $problems), 'warning');
                         Notification::make()
                             ->title('Nothing was pushed')
                             ->body(new HtmlString('<ul><li>' . implode('</li><li>', array_map('e', $problems)) . '</li></ul>'))
@@ -135,6 +208,7 @@ class EditNetwork extends EditRecord
                     $total = $results->count();
                     $failed = $results->where('ok', false)->count();
                     $done = $results->where('complete', true)->count();
+                    NetworkLog::record($network, 'push', "Config pushed to $done of $total shard(s)", $results->map(fn ($r) => "{$r['server']}: {$r['message']}")->implode("\n"), $failed > 0 ? 'warning' : 'info');
                     Notification::make()
                         ->title(match (true) {
                             $failed > 0 => "$failed of $total shard(s) failed",
@@ -147,53 +221,113 @@ class EditNetwork extends EditRecord
                         ->send();
                 }),
 
-            Action::make('plugins')
-                ->label('Plugins')
-                ->tooltip('Plugins on all shards')
-                ->icon('tabler-plug')
+            ActionGroup::make([
+                Action::make('exclude_page_console')
+                    ->label('Console')
+                    ->tooltip('Every shard\'s console, and commands on all of them')
+                    ->icon('tabler-terminal-2')
+                    ->visible(fn () => $this->userCan('console'))
+                    ->url(fn () => NetworkResource::getUrl('console', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_players')
+                    ->label('Players')
+                    ->tooltip('Who is online where; kick and ban')
+                    ->icon('tabler-users')
+                    ->visible(fn () => $this->userCan('players'))
+                    ->url(fn () => NetworkResource::getUrl('players', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_activity')
+                    ->label('Activity')
+                    ->tooltip('Who did what, and alerts')
+                    ->icon('tabler-list-details')
+                    ->visible(fn () => $this->userCan('view'))
+                    ->url(fn () => NetworkResource::getUrl('activity', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_history')
+                    ->label('History')
+                    ->tooltip('A week of TPS, players and memory')
+                    ->icon('tabler-chart-line')
+                    ->visible(fn () => $this->userCan('view'))
+                    ->url(fn () => NetworkResource::getUrl('history', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_backups')
+                    ->label('Backups')
+                    ->tooltip('Back up and restore the whole network')
+                    ->icon('tabler-database')
+                    ->visible(fn () => $this->userCan('control'))
+                    ->url(fn () => NetworkResource::getUrl('backups', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_plugins')
+                    ->label('Plugins')
+                    ->tooltip('Plugins on all shards')
+                    ->icon('tabler-plug')
+                    ->visible(fn () => $this->userCan('update'))
+                    ->url(fn () => NetworkResource::getUrl('plugins', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_plugin_updates')
+                    ->label('Plugin updates')
+                    ->tooltip('Newer versions, and copies that differ')
+                    ->icon('tabler-package')
+                    ->visible(fn () => $this->userCan('update'))
+                    ->url(fn () => NetworkResource::getUrl('plugin-updates', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_config_sync')
+                    ->label('Config sync')
+                    ->tooltip('The same plugin configs on every shard')
+                    ->icon('tabler-file-settings')
+                    ->visible(fn () => $this->userCan('update'))
+                    ->url(fn () => NetworkResource::getUrl('config-sync', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_database')
+                    ->label('Database')
+                    ->tooltip('One MySQL database for the network\'s plugins')
+                    ->icon('tabler-database-cog')
+                    ->visible(fn () => $this->userCan('update'))
+                    ->url(fn () => NetworkResource::getUrl('database', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_rebalance')
+                    ->label('Rebalance shards')
+                    ->tooltip('Borders that share players evenly')
+                    ->icon('tabler-arrows-split')
+                    ->visible(fn () => $this->userCan('update'))
+                    ->url(fn () => NetworkResource::getUrl('rebalance', ['record' => $this->getRecord()])),
+            ])
+                ->label('Tools')
+                ->icon('tabler-layout-grid')
                 ->color('gray')
-                ->url(fn () => NetworkResource::getUrl('plugins', ['record' => $this->getRecord()])),
+                ->button(),
 
-            Action::make('config_sync')
-                ->label('Config sync')
-                ->tooltip('The same plugin configs on every shard')
-                ->icon('tabler-file-settings')
+            ActionGroup::make([
+                Action::make('exclude_velocity')
+                    ->label('Velocity servers')
+                    ->icon('tabler-route')
+                    ->modalHeading('Shards for velocity.toml')
+                    ->modalDescription('Push config writes this into the proxy\'s velocity.toml for you when the proxy is in the network. Without one, paste it into the [servers] section yourself.')
+                    ->modalContent(fn () => $this->velocityHtml())
+                    ->modalSubmitAction(false)
+                    ->modalCancelActionLabel('Close'),
+                Action::make('exclude_test_copy')
+                    ->label('Make a test copy')
+                    ->icon('tabler-copy')
+                    ->visible(fn () => $this->userCan('update') && auth()->user()?->can('create', Network::class))
+                    ->modalHeading('Make a test copy of this network')
+                    ->modalDescription('Creates a new server for each server in this network on the same nodes, copies their files as they are now, and joins them in a new network with its own Redis and database. Try updates and plugins there first. The real network keeps running and isn\'t changed. The copy is left stopped.')
+                    ->fillForm(fn () => ['name' => $this->getRecord()->name . ' test', 'memory_percent' => 50])
+                    ->schema([
+                        \Filament\Forms\Components\TextInput::make('name')->required()->maxLength(100),
+                        \Filament\Forms\Components\TextInput::make('memory_percent')
+                            ->label('Memory')
+                            ->numeric()->integer()->minValue(10)->maxValue(100)->suffix('% of each original')
+                            ->helperText('A test copy rarely needs as much. The nodes need this much free, plus the disk space of the copies.'),
+                    ])
+                    ->modalSubmitActionLabel('Make the copy')
+                    ->action(function (array $data) {
+                        \Ginjer\Network\Jobs\CopyNetwork::dispatch($this->getRecord()->id, ['name' => $data['name'], 'memory_percent' => (int) $data['memory_percent']], (int) auth()->id());
+                        NetworkLog::record($this->getRecord(), 'copy', "Test copy \"{$data['name']}\" started");
+                        Notification::make()->title('Making the test copy')->body('It takes a while for a big world. You\'ll get a notification when it\'s ready.')->success()->send();
+                    }),
+                Action::make('exclude_open_original')
+                    ->label('Open the real network')
+                    ->icon('tabler-external-link')
+                    ->visible(fn () => $this->getRecord()->test_of_network_id !== null && Network::find($this->getRecord()->test_of_network_id) !== null)
+                    ->url(fn () => NetworkResource::getUrl('edit', ['record' => $this->getRecord()->test_of_network_id])),
+                DeleteAction::make()->visible(fn () => $this->userCan('delete')),
+            ])
+                ->label('More')
+                ->icon('tabler-dots')
                 ->color('gray')
-                ->url(fn () => NetworkResource::getUrl('config-sync', ['record' => $this->getRecord()])),
-
-            Action::make('database')
-                ->label('Database')
-                ->tooltip('One MySQL database for the network\'s plugins')
-                ->icon('tabler-database-cog')
-                ->color('gray')
-                ->url(fn () => NetworkResource::getUrl('database', ['record' => $this->getRecord()])),
-
-            Action::make('history')
-                ->label('History')
-                ->tooltip('A week of TPS, players and memory')
-                ->icon('tabler-chart-line')
-                ->color('gray')
-                ->url(fn () => NetworkResource::getUrl('history', ['record' => $this->getRecord()])),
-
-            Action::make('backups')
-                ->label('Backups')
-                ->tooltip('Back up and restore the whole network')
-                ->icon('tabler-database')
-                ->color('gray')
-                ->url(fn () => NetworkResource::getUrl('backups', ['record' => $this->getRecord()])),
-
-            Action::make('velocity')
-                ->label('Velocity servers')
-                ->tooltip('Velocity servers')
-                ->icon('tabler-route')
-                ->color('gray')
-                ->modalHeading('Shards for velocity.toml')
-                ->modalDescription('Push config writes this into the proxy\'s velocity.toml for you when the proxy is in the network. Without one, paste it into the [servers] section yourself.')
-                ->modalContent(fn () => $this->velocityHtml())
-                ->modalSubmitAction(false)
-                ->modalCancelActionLabel('Close'),
-
-            DeleteAction::make(),
+                ->button(),
         ];
     }
 
@@ -202,6 +336,7 @@ class EditNetwork extends EditRecord
     {
         \Ginjer\Network\Jobs\RollingUpdate::dispatch($this->getRecord()->id, $what, (int) auth()->id());
         $update = in_array(true, $what, true);
+        NetworkLog::record($this->getRecord(), $update ? 'update' : 'restart', $update ? 'Update started: ' . implode(', ', array_keys(array_filter($what))) : 'Rolling restart started');
         Notification::make()
             ->title($update ? 'Update started' : 'Rolling restart started')
             ->body('The shards restart one at a time. You\'ll get a notification when it\'s done. This needs the panel\'s queue worker.')
@@ -214,6 +349,7 @@ class EditNetwork extends EditRecord
         // "exclude_" keeps the label: Pelican otherwise shows actions as bare icons, which is too
         // easy to misread in a menu that can kill every server
         return Action::make("exclude_power_$action")
+            ->visible(fn () => $this->userCan('control'))
             ->label($label)
             ->icon($icon)
             ->color($color)
@@ -226,6 +362,7 @@ class EditNetwork extends EditRecord
             })
             ->action(function (NetworkPowerService $service) use ($action) {
                 $count = $service->run($this->getRecord(), $action);
+                NetworkLog::record($this->getRecord(), 'power', ucfirst($action) . " network ($count servers)", null, $action === 'kill' ? 'warning' : 'info');
 
                 Notification::make()
                     ->title($count === 0 ? 'This network has no servers yet' : ucfirst($action) . " sent to $count server(s)")

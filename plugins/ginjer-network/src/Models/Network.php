@@ -49,6 +49,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property ?int $database_id
  * @property ?string $synced_files
  * @property ?int $sync_source_server_id
+ * @property ?string $discord_webhook
+ * @property string $discord_level
+ * @property bool $maintenance
+ * @property ?string $maintenance_motd
+ * @property ?string $maintenance_allow
+ * @property ?int $test_of_network_id
  * @property Collection<int, NetworkMember> $members
  */
 class Network extends Model
@@ -92,6 +98,12 @@ class Network extends Model
         'database_id',
         'synced_files',
         'sync_source_server_id',
+        'discord_webhook',
+        'discord_level',
+        'maintenance',
+        'maintenance_motd',
+        'maintenance_allow',
+        'test_of_network_id',
     ];
 
     protected $hidden = ['redis_password', 'github_token'];
@@ -101,6 +113,8 @@ class Network extends Model
         return [
             'redis_password' => 'encrypted',
             'github_token' => 'encrypted',
+            'discord_webhook' => 'encrypted',
+            'maintenance' => 'boolean',
             'health_alerts' => 'boolean',
             'restart_on_lag' => 'boolean',
             'last_backup_at' => 'datetime',

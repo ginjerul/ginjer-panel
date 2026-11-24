@@ -31,6 +31,7 @@ use Throwable;
  */
 class NetworkHistoryPage extends Page
 {
+    use \Ginjer\Network\Filament\Admin\Resources\Networks\Pages\Concerns\ChecksNetworkAccess;
     use InteractsWithRecord;
 
     protected static string $resource = NetworkResource::class;
@@ -38,6 +39,7 @@ class NetworkHistoryPage extends Page
     public function mount(int|string $record): void
     {
         $this->record = $this->resolveRecord($record);
+        $this->checkNetworkAccess();
     }
 
     public function getTitle(): string

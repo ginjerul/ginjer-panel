@@ -17,6 +17,11 @@ use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\CreateNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\EditNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\ListNetworks;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkBackupsPage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkActivityPage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkConsolePage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPlayersPage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPluginUpdatesPage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkRebalancePage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkConfigSyncPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkDatabasePage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkHistoryPage;
@@ -66,7 +71,8 @@ class NetworkResource extends Resource
             ->columns([
                 TextColumn::make('name')
                     ->searchable()
-                    ->sortable(),
+                    ->sortable()
+                    ->description(fn (Network $network) => collect([$network->maintenance ? 'maintenance' : null, $network->test_of_network_id ? 'test copy' : null])->filter()->implode(', ') ?: null),
                 TextColumn::make('world'),
                 TextColumn::make('shards')
                     ->label('Shards')
@@ -80,8 +86,9 @@ class NetworkResource extends Resource
                     ->counts('members'),
             ])
             ->modifyQueryUsing(fn ($query) => $query->with('members.server'))
+            ->recordUrl(fn (Network $network) => auth()->user()?->can('view', $network) ? static::getUrl('edit', ['record' => $network]) : null)
             ->recordActions([
-                EditAction::make(),
+                EditAction::make()->visible(fn (Network $network) => auth()->user()?->can('view', $network)),
                 DeleteAction::make(),
             ])
             ->emptyStateIcon('tabler-topology-star-3')
@@ -207,6 +214,33 @@ class NetworkResource extends Resource
                             ->helperText('Off by default: a restart disconnects that shard\'s players.')
                             ->inline(false),
                     ]),
+                Section::make('Discord')
+                    ->description('Posts to a Discord channel through a webhook (channel settings → Integrations → Webhooks).')
+                    ->columns(3)
+                    ->collapsible()
+                    ->collapsed(fn (?Network $record) => blank($record?->discord_webhook))
+                    ->schema([
+                        TextInput::make('discord_webhook')
+                            ->label('Webhook link')
+                            ->password()->revealable()
+                            ->placeholder('https://discord.com/api/webhooks/...')
+                            ->rule(fn () => function (string $attribute, $value, \Closure $fail) {
+                                if (filled($value) && !\Ginjer\Network\Services\Activity\NetworkLog::validWebhook($value)) {
+                                    $fail('That isn\'t a Discord webhook link.');
+                                }
+                            })
+                            ->columnSpan(2)
+                            ->helperText('Stored encrypted.'),
+                        \Filament\Forms\Components\Select::make('discord_level')
+                            ->label('Post')
+                            ->options([
+                                'alerts' => 'Alerts: shards down, lag, crashes, failures',
+                                'all' => 'Everything in the activity log',
+                                'off' => 'Nothing',
+                            ])
+                            ->default('alerts')
+                            ->selectablePlaceholder(false),
+                    ]),
                 Section::make('Rolling restarts')
                     ->description('How updates, rolling restarts and the daily restart go through the shards.')
                     ->columns(4)
@@ -294,6 +328,11 @@ class NetworkResource extends Resource
             'backups' => NetworkBackupsPage::route('/{record}/backups'),
             'history' => NetworkHistoryPage::route('/{record}/history'),
             'config-sync' => NetworkConfigSyncPage::route('/{record}/config-sync'),
+            'activity' => NetworkActivityPage::route('/{record}/activity'),
+            'console' => NetworkConsolePage::route('/{record}/console'),
+            'players' => NetworkPlayersPage::route('/{record}/players'),
+            'plugin-updates' => NetworkPluginUpdatesPage::route('/{record}/plugin-updates'),
+            'rebalance' => NetworkRebalancePage::route('/{record}/rebalance'),
             'database' => NetworkDatabasePage::route('/{record}/database'),
         ];
     }

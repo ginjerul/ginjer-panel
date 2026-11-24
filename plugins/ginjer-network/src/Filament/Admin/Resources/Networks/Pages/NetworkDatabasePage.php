@@ -24,13 +24,20 @@ use Throwable;
  */
 class NetworkDatabasePage extends Page
 {
+    use \Ginjer\Network\Filament\Admin\Resources\Networks\Pages\Concerns\ChecksNetworkAccess;
     use InteractsWithRecord;
 
     protected static string $resource = NetworkResource::class;
 
+    protected function networkAbility(): string
+    {
+        return 'update';
+    }
+
     public function mount(int|string $record): void
     {
         $this->record = $this->resolveRecord($record);
+        $this->checkNetworkAccess();
     }
 
     public function getTitle(): string
@@ -69,6 +76,7 @@ class NetworkDatabasePage extends Page
                 ->action(function (array $data) {
                     try {
                         app(NetworkDatabase::class)->create($this->record, (int) $data['host']);
+                        \Ginjer\Network\Services\Activity\NetworkLog::record($this->record, 'database', 'Network database created');
                         Notification::make()->title('Database created')->body('Now set up LuckPerms, or give the details below to other plugins.')->success()->send();
                     } catch (Throwable $exception) {
                         report($exception);
@@ -84,6 +92,7 @@ class NetworkDatabasePage extends Page
                 ->action(function () {
                     $results = collect(app(NetworkDatabase::class)->setUpLuckPerms($this->record));
                     $failed = $results->where('ok', false)->count();
+                    \Ginjer\Network\Services\Activity\NetworkLog::record($this->record, 'database', 'LuckPerms pointed at the network database', $results->map(fn ($r) => "{$r['server']}: {$r['message']}")->implode("\n"), $failed === 0 ? 'info' : 'warning');
                     Notification::make()
                         ->title($failed === 0 ? 'LuckPerms set up' : "LuckPerms set up, $failed server(s) not")
                         ->body(new HtmlString('<ul>' . $results->map(fn ($r) => '<li><b>' . e($r['server']) . ':</b> ' . e($r['message']) . '</li>')->implode('') . '</ul>' . ($failed === 0 ? 'Restart the network (Power → Rolling restart) to use it.' : '')))
@@ -100,6 +109,7 @@ class NetworkDatabasePage extends Page
                 ->modalDescription('Plugins using the old password lose the connection. Run "Set up LuckPerms" again afterwards, and update any other plugin by hand.')
                 ->action(function () {
                     app(NetworkDatabase::class)->rotatePassword($this->record);
+                    \Ginjer\Network\Services\Activity\NetworkLog::record($this->record, 'database', 'Network database password changed');
                     Notification::make()->title('Password changed')->success()->send();
                 }),
             Action::make('exclude_delete')
@@ -111,6 +121,7 @@ class NetworkDatabasePage extends Page
                 ->modalDescription('Drops the database and all the data in it: ranks, balances, everything plugins stored there. Take a backup first.')
                 ->action(function () {
                     app(NetworkDatabase::class)->remove($this->record);
+                    \Ginjer\Network\Services\Activity\NetworkLog::record($this->record, 'database', 'Network database deleted', null, 'warning');
                     Notification::make()->title('Database deleted')->success()->send();
                 }),
         ];

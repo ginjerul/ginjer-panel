@@ -157,7 +157,7 @@ class Hotspots extends Page implements HasTable
             ->modalDescription('Players get a 30-second warning in chat, then Reef removes them. Named items are kept.')
             ->action(function () use ($what) {
                 try {
-                    $this->server()->send("reef clear $what 30");
+                    \Ginjer\Network\Services\Ops\Console::run($this->server(), "reef clear $what 30");
                     Notification::make()->title('Clearing in 30 seconds')->body('Players were warned. The console shows how many were removed.')->success()->send();
                 } catch (Throwable $exception) {
                     Notification::make()->title('Couldn\'t send the command')->body('The server must be running. ' . $exception->getMessage())->danger()->send();
@@ -169,7 +169,7 @@ class Hotspots extends Page implements HasTable
     {
         $before = $this->generated;
         try {
-            $this->server()->send('reef entities');
+            \Ginjer\Network\Services\Ops\Console::run($this->server(), 'reef entities');
         } catch (Throwable $exception) {
             Notification::make()->title('Couldn\'t start a scan')->body('The server must be running. ' . $exception->getMessage())->danger()->send();
 

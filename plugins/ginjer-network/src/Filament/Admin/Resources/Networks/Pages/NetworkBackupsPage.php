@@ -27,14 +27,21 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class NetworkBackupsPage extends Page implements HasTable
 {
+    use \Ginjer\Network\Filament\Admin\Resources\Networks\Pages\Concerns\ChecksNetworkAccess;
     use InteractsWithRecord;
     use InteractsWithTable;
 
     protected static string $resource = NetworkResource::class;
 
+    protected function networkAbility(): string
+    {
+        return 'control';
+    }
+
     public function mount(int|string $record): void
     {
         $this->record = $this->resolveRecord($record);
+        $this->checkNetworkAccess();
         NetworkBackup::where('network_id', $this->record->id)->where('status', 'running')->get()->each->refreshStatus();
     }
 
@@ -100,7 +107,7 @@ class NetworkBackupsPage extends Page implements HasTable
                     ->label('Restore')
                     ->icon('tabler-restore')
                     ->color('danger')
-                    ->visible(fn (NetworkBackup $b) => $b->status === 'done')
+                    ->visible(fn (NetworkBackup $b) => $b->status === 'done' && $this->userCan('update'))
                     ->requiresConfirmation()
                     ->modalHeading(fn (NetworkBackup $b) => "Restore every server to \"{$b->name}\"?")
                     ->modalDescription('Stops every server in the network and puts each back exactly as it was then. Everything since that backup is lost: builds, towns, wars, inventories. Start the network again when they\'re done.')
@@ -110,6 +117,7 @@ class NetworkBackupsPage extends Page implements HasTable
                         Notification::make()->title('Restore started')->body('The servers stop, then restore. The result goes to your notifications.')->warning()->send();
                     }),
                 Action::make('exclude_delete')
+                    ->visible(fn () => $this->userCan('update'))
                     ->label('Delete')
                     ->icon('tabler-trash')
                     ->color('gray')

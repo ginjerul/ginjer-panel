@@ -33,6 +33,11 @@ class MembersRelationManager extends RelationManager
 
     protected static ?string $title = 'Servers';
 
+    public function isReadOnly(): bool
+    {
+        return !auth()->user()?->can('update', $this->getOwnerRecord());
+    }
+
     public function form(Schema $schema): Schema
     {
         return $schema
@@ -123,7 +128,7 @@ class MembersRelationManager extends RelationManager
                     ->modalDescription('Runs "nda shards promote" on this shard. It becomes the Nodes leader once the old leader\'s lock has expired. Use this when the leader is down. It is also marked as the leader here.')
                     ->action(function (NetworkMember $member) {
                         try {
-                            $member->server->send('nda shards promote');
+                            \Ginjer\Network\Services\Ops\Console::run($member->server, 'nda shards promote');
                             $member->update(['nodes_leader' => true]);
                             Notification::make()->title('Promote sent to ' . $member->displayName())->body('Check Status in a few seconds. Push the config so the roles stay this way after a restart.')->success()->send();
                         } catch (Throwable $exception) {

@@ -43,7 +43,7 @@ final class HealthRules
 
             if (!$running) {
                 if ($m['running'] === true && !$m['down']) {
-                    $alerts[] = ['level' => 'danger', 'title' => "$name is down", 'body' => "Wings reports it as " . ($now['state'] ?? 'not answering') . '. Players there are disconnected until it\'s back.'];
+                    $alerts[] = ['level' => 'danger', 'shard' => $name, 'kind' => 'down', 'title' => "$name is down", 'body' => "Wings reports it as " . ($now['state'] ?? 'not answering') . '. Players there are disconnected until it\'s back.'];
                     $m['down'] = true;
                 }
                 $next[$name] = ['running' => false, 'silent' => 0, 'silentAlerted' => false, 'lag' => 0, 'lagAlerted' => false] + $m;
@@ -52,7 +52,7 @@ final class HealthRules
             }
 
             if ($m['down']) {
-                $alerts[] = ['level' => 'success', 'title' => "$name is back", 'body' => 'It\'s running again.'];
+                $alerts[] = ['level' => 'success', 'shard' => $name, 'kind' => 'back', 'title' => "$name is back", 'body' => 'It\'s running again.'];
                 $m['down'] = false;
             }
 
@@ -60,12 +60,12 @@ final class HealthRules
             if (!$now['reporting']) {
                 $m['silent']++;
                 if ($m['silent'] >= self::SILENT_MINUTES && !$m['silentAlerted']) {
-                    $alerts[] = ['level' => 'warning', 'title' => "$name isn't syncing with Nodes", 'body' => "It's running but hasn't reported to Redis for {$m['silent']} minutes, so towns and claims there may be out of date. Check that Nodes started and can reach Redis."];
+                    $alerts[] = ['level' => 'warning', 'shard' => $name, 'kind' => 'silent', 'title' => "$name isn't syncing with Nodes", 'body' => "It's running but hasn't reported to Redis for {$m['silent']} minutes, so towns and claims there may be out of date. Check that Nodes started and can reach Redis."];
                     $m['silentAlerted'] = true;
                 }
             } else {
                 if ($m['silentAlerted']) {
-                    $alerts[] = ['level' => 'success', 'title' => "$name is syncing again", 'body' => 'Nodes on it reports to Redis again.'];
+                    $alerts[] = ['level' => 'success', 'shard' => $name, 'kind' => 'syncing', 'title' => "$name is syncing again", 'body' => 'Nodes on it reports to Redis again.'];
                 }
                 $m['silent'] = 0;
                 $m['silentAlerted'] = false;
@@ -78,17 +78,17 @@ final class HealthRules
                     $detail = sprintf('%.1f TPS%s for %d minutes (threshold %d).', $now['tps'], $now['mspt'] !== null ? sprintf(', %.0f ms per tick', $now['mspt']) : '', $m['lag'], $settings['lag_tps']);
                     if ($settings['restart_on_lag']) {
                         $restart[] = $name;
-                        $alerts[] = ['level' => 'warning', 'title' => "Restarting $name: it's lagging", 'body' => $detail . ' Restarting it, as set in the network\'s health settings.'];
+                        $alerts[] = ['level' => 'warning', 'shard' => $name, 'kind' => 'lag_restart', 'title' => "Restarting $name: it's lagging", 'body' => $detail . ' Restarting it, as set in the network\'s health settings.'];
                         $m['lag'] = 0; // a fresh start
                     } else {
-                        $alerts[] = ['level' => 'warning', 'title' => "$name is lagging", 'body' => $detail . ' If spark is installed, a profile is being recorded; its link follows in a minute.'];
+                        $alerts[] = ['level' => 'warning', 'shard' => $name, 'kind' => 'lag', 'title' => "$name is lagging", 'body' => $detail . ' If spark is installed, a profile is being recorded; its link follows in a minute.'];
                         $lagging[] = $name;
                         $m['lagAlerted'] = true;
                     }
                 }
             } elseif ($now['tps'] !== null) {
                 if ($m['lagAlerted']) {
-                    $alerts[] = ['level' => 'success', 'title' => "$name stopped lagging", 'body' => sprintf('Back to %.1f TPS.', $now['tps'])];
+                    $alerts[] = ['level' => 'success', 'shard' => $name, 'kind' => 'lag_over', 'title' => "$name stopped lagging", 'body' => sprintf('Back to %.1f TPS.', $now['tps'])];
                 }
                 $m['lag'] = 0;
                 $m['lagAlerted'] = false;
