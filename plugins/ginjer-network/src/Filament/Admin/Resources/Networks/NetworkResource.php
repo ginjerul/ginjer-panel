@@ -17,6 +17,8 @@ use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\CreateNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\EditNetwork;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\ListNetworks;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkBackupsPage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkConfigSyncPage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkDatabasePage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkHistoryPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPluginsPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\RelationManagers\MembersRelationManager;
@@ -291,6 +293,8 @@ class NetworkResource extends Resource
             'plugins' => NetworkPluginsPage::route('/{record}/plugins'),
             'backups' => NetworkBackupsPage::route('/{record}/backups'),
             'history' => NetworkHistoryPage::route('/{record}/history'),
+            'config-sync' => NetworkConfigSyncPage::route('/{record}/config-sync'),
+            'database' => NetworkDatabasePage::route('/{record}/database'),
         ];
     }
 }

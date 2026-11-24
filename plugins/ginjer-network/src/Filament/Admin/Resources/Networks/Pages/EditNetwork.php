@@ -154,6 +154,20 @@ class EditNetwork extends EditRecord
                 ->color('gray')
                 ->url(fn () => NetworkResource::getUrl('plugins', ['record' => $this->getRecord()])),
 
+            Action::make('config_sync')
+                ->label('Config sync')
+                ->tooltip('The same plugin configs on every shard')
+                ->icon('tabler-file-settings')
+                ->color('gray')
+                ->url(fn () => NetworkResource::getUrl('config-sync', ['record' => $this->getRecord()])),
+
+            Action::make('database')
+                ->label('Database')
+                ->tooltip('One MySQL database for the network\'s plugins')
+                ->icon('tabler-database-cog')
+                ->color('gray')
+                ->url(fn () => NetworkResource::getUrl('database', ['record' => $this->getRecord()])),
+
             Action::make('history')
                 ->label('History')
                 ->tooltip('A week of TPS, players and memory')

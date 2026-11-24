@@ -124,13 +124,25 @@ Http::fake(function (Request $request) use (&$fs, &$state, &$log, &$names, &$fai
         case $rest === '/files/list-directory':
             $dir = trim($q['directory'] ?? '/', '/');
             $out = [];
+            $folders = [];
             foreach (array_keys($fs[$uuid] ?? []) as $file) {
                 if (dirname($file) === ($dir === '' ? '.' : $dir)) {
                     $out[] = ['name' => basename($file), 'file' => true, 'directory' => false, 'size' => strlen($fs[$uuid][$file])];
+                } elseif (str_starts_with($file, $dir === '' ? '' : "$dir/")) {
+                    $folders[explode('/', substr($file, $dir === '' ? 0 : strlen($dir) + 1))[0]] = true;
                 }
+            }
+            foreach (array_keys($folders) as $folder) {
+                $out[] = ['name' => $folder, 'file' => false, 'directory' => true, 'size' => 4096];
             }
 
             return $ok($out);
+        case $rest === '/files/write':
+            $file = trim($q['file'], '/');
+            $fs[$uuid][$file] = $request->body();
+            $log[] = "write {$names[$uuid]} $file";
+
+            return $ok('', 204);
         case $rest === '/files/contents':
             $file = trim($q['file'], '/');
 
@@ -361,6 +373,67 @@ try {
     check('restore: every running server is stopped first', $stops === 4 && array_search($restores->first(), $log) > max(array_keys(array_filter($log, fn ($l) => str_ends_with($l, ' stop')))), json_encode($log));
     check('restore: every server restored exactly (truncate)', $problems === [] && $restores->count() === 5 && $restores->every(fn ($l) => str_ends_with($l, 'truncate=true')), json_encode([$problems, $restores]));
     check('restore: servers marked as restoring', Server::whereIn('id', [$west->id, $redis->id])->get()->every(fn ($s) => $s->status?->value === 'restoring_backup'));
+
+    // ---------------- config sync
+    $sync = app(\Ginjer\Network\Services\Ops\ConfigSync::class);
+    $fs[$west->uuid]['plugins/Essentials/config.yml'] = "chat: on\n";
+    $fs[$west->uuid]['plugins/Essentials/messages/en.yml'] = "hi: Hello\n";
+    $fs[$west->uuid]['plugins/Essentials/messages/de.yml'] = "hi: Hallo\n";
+    $fs[$east->uuid]['plugins/Essentials/config.yml'] = "chat: off\n";
+    $fs[$east->uuid]['plugins/Essentials/messages/en.yml'] = "hi: Hello\n";
+    $fs[$west->uuid]['reef.yml'] = 'shard: west';
+    $fs[$east->uuid]['reef.yml'] = 'shard: east';
+    $network->update(['synced_files' => "plugins/Essentials/config.yml\nplugins/Essentials/messages/\nreef.yml\nplugins/Nodes/config.yml\nplugins/Gone.yml"]);
+    $c = $sync->compare($network->refresh());
+    $rows = collect($c['files'])->keyBy('path');
+    check('sync: the leader is the source by default', $c['source'] === 'west');
+    check('sync: folders are expanded file by file', $rows->keys()->sort()->values()->all() === ['plugins/Essentials/config.yml', 'plugins/Essentials/messages/de.yml', 'plugins/Essentials/messages/en.yml'], $rows->keys()->toJson());
+    check('sync: differences and missing copies are found', $rows['plugins/Essentials/config.yml']['different'] === ['east'] && $rows['plugins/Essentials/config.yml']['missing'] === ['north']
+        && $rows['plugins/Essentials/messages/en.yml']['same'] === ['east'] && $rows['plugins/Essentials/messages/de.yml']['missing'] === ['east', 'north'], json_encode($c['files']));
+    $skipped = implode(' | ', $c['skipped']);
+    check('sync: per-shard files and missing paths are refused with a reason', str_contains($skipped, 'reef.yml: it holds') && str_contains($skipped, 'plugins/Nodes/config.yml: Nodes') && str_contains($skipped, 'plugins/Gone.yml: not on the source'), $skipped);
+    $log = [];
+    $r = $sync->sync($network);
+    check('sync: copies only what differs', $r['copied'] === 5 && $r['failed'] === [], json_encode($r));
+    check('sync: every shard now has the source\'s files', collect([$east, $north])->every(fn ($s) => ($fs[$s->uuid]['plugins/Essentials/config.yml'] ?? '') === "chat: on\n" && ($fs[$s->uuid]['plugins/Essentials/messages/de.yml'] ?? '') === "hi: Hallo\n"));
+    check('sync: the old copy is kept', ($fs[$east->uuid]['plugins/Essentials/config.yml.ginjer-old'] ?? '') === "chat: off\n");
+    check('sync: per-shard files and the proxy are untouched', $fs[$east->uuid]['reef.yml'] === 'shard: east' && !collect($log)->contains(fn ($l) => str_contains($l, ' proxy ') || str_contains($l, ' west ')), json_encode($log));
+    check('sync: afterwards everything is the same', collect($sync->compare($network)['files'])->every(fn ($row) => $row['different'] === [] && $row['missing'] === []));
+    $network->update(['sync_source_server_id' => $east->id]);
+    check('sync: another source can be chosen', \Ginjer\Network\Services\Ops\ConfigSync::source($network->refresh())->is($east));
+    $network->update(['sync_source_server_id' => null, 'synced_files' => null]);
+
+    // ---------------- shared database
+    $lp = "server: global\nstorage-method: h2\ndata:\n  address: localhost\n  database: minecraft\n  username: root\n  password: ''\n  table-prefix: 'luckperms_'\nmessaging-service: auto\nredis:\n  enabled: false\n  address: localhost\n  username: ''\n  password: ''\nrabbitmq:\n  enabled: false\n  address: localhost\n";
+    $fakeDb = new \App\Models\Database();
+    $fakeDb->forceFill(['database' => 's1_network', 'username' => 'u1_abc', 'password' => 'p@ss:"word', 'remote' => '%']);
+    $fakeDb->setRelation('host', (new \App\Models\DatabaseHost())->forceFill(['name' => 'Main MySQL', 'host' => '10.0.0.5', 'port' => 3306]));
+    $network->update(['redis_password' => 'rpass']);
+    $out = \Ginjer\Network\Services\Ops\NetworkDatabase::luckPermsConfig($lp, $fakeDb, $network->refresh());
+    $yaml = \Symfony\Component\Yaml\Yaml::parse($out);
+    check('database: LuckPerms is pointed at MySQL', $yaml['storage-method'] === 'mysql' && $yaml['data']['address'] === '10.0.0.5:3306' && $yaml['data']['database'] === 's1_network'
+        && $yaml['data']['username'] === 'u1_abc' && $yaml['data']['password'] === 'p@ss:"word', $out);
+    check('database: LuckPerms sends changes over the network\'s Redis', $yaml['messaging-service'] === 'redis' && $yaml['redis']['enabled'] === true && $yaml['redis']['address'] === '127.0.0.1:1' && $yaml['redis']['password'] === 'rpass');
+    check('database: other LuckPerms settings are kept', $yaml['server'] === 'global' && $yaml['data']['table-prefix'] === 'luckperms_' && $yaml['rabbitmq']['enabled'] === false && $yaml['rabbitmq']['address'] === 'localhost');
+    check('database: no network database yet', \Ginjer\Network\Services\Ops\NetworkDatabase::database($network) === null);
+    check('database: the leader owns it', \Ginjer\Network\Services\Ops\NetworkDatabase::owner($network)->is($west));
+    $host = \App\Models\DatabaseHost::forceCreate(['name' => 'ops-db', 'host' => '10.0.0.5', 'port' => 3306, 'username' => 'root', 'password' => 'x']);
+    $db = \App\Models\Database::forceCreate(['server_id' => $west->id, 'database_host_id' => $host->id, 'database' => 's' . $west->id . '_network', 'username' => 'u_test', 'password' => 'secret', 'remote' => '%']);
+    $network->update(['database_id' => $db->id]);
+    $fs[$west->uuid]['plugins/LuckPerms/config.yml'] = $lp;
+    $fs[$east->uuid]['plugins/LuckPerms/config.yml'] = $lp;
+    $fs[$proxy->uuid]['plugins/luckperms/config.yml'] = $lp;
+    $fs[$north->uuid]['plugins/LuckPerms/config.yml'] = "storage-method: h2\n";
+    $results = collect(app(\Ginjer\Network\Services\Ops\NetworkDatabase::class)->setUpLuckPerms($network->refresh()))->keyBy('server');
+    check('database: LuckPerms set up on the shards that have it, and on the proxy', $results['west']['ok'] && $results['east']['ok'] && $results['proxy']['ok']
+        && str_contains($fs[$east->uuid]['plugins/LuckPerms/config.yml'], 'storage-method: mysql') && str_contains($fs[$proxy->uuid]['plugins/luckperms/config.yml'], 'password: secret'), $results->toJson());
+    check('database: a config missing settings is refused, not half changed', !$results['north']['ok'] && str_contains($results['north']['message'], 'data.address') && $fs[$north->uuid]['plugins/LuckPerms/config.yml'] === "storage-method: h2\n", $results->toJson());
+    unset($fs[$north->uuid]['plugins/LuckPerms/config.yml']);
+    $results = collect(app(\Ginjer\Network\Services\Ops\NetworkDatabase::class)->setUpLuckPerms($network))->keyBy('server');
+    check('database: a shard without LuckPerms is reported, Redis isn\'t', !$results['north']['ok'] && str_contains($results['north']['message'], 'start the shard once') && !$results->has('redis'));
+    check('database: the old LuckPerms config is kept', ($fs[$east->uuid]['plugins/LuckPerms/config.yml.ginjer-old'] ?? '') === $lp);
+    check('database: setting up twice changes nothing', $results['east']['message'] === 'already set up');
+    check('database: details for other plugins', \Ginjer\Network\Services\Ops\NetworkDatabase::details($db->fresh('host'))['jdbc'] === 'jdbc:mysql://10.0.0.5:3306/s' . $west->id . '_network');
 
     // ---------------- Chunky and spark
     $tools = app(\Ginjer\Network\Services\Ops\ServerTools::class);
