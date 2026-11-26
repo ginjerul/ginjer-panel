@@ -19,6 +19,8 @@ use Ginjer\Network\Services\Rebalance\Anvil;
 use Ginjer\Network\Services\Rebalance\LoadSampler;
 use Ginjer\Network\Services\Rebalance\Rebalancer;
 use Ginjer\Network\Services\Rebalance\ShardMap;
+use Ginjer\Network\Services\Ops\ScheduleRules;
+use Illuminate\Support\Carbon;
 
 spl_autoload_register(function ($class) {
     $file = __DIR__ . '/../src/' . str_replace('\\', '/', substr($class, strlen('Ginjer\\Network\\'))) . '.php';
@@ -181,6 +183,27 @@ $zip->close();
 check('versions: name and version from plugin.yml', PluginUpdates::readJar((string) file_get_contents($tmp)) === ['name' => 'CoolPlugin', 'version' => '1.4.2']);
 @unlink($tmp);
 check('versions: not a jar', PluginUpdates::readJar('nope') === ['name' => '', 'version' => '']);
+
+// ---------------- schedules
+
+$sat = Carbon::parse('2026-11-28 18:00:20'); // a Saturday
+check('schedule: at its time', ScheduleRules::due('18:00', null, [], null, $sat) && !ScheduleRules::due('18:01', null, [], null, $sat));
+check('schedule: once per minute', !ScheduleRules::due('18:00', null, [], Carbon::parse('2026-11-28 18:00:02'), $sat));
+check('schedule: only on its days', ScheduleRules::due('18:00', null, [6, 7], null, $sat) && !ScheduleRules::due('18:00', null, [1, 2], null, $sat));
+check('schedule: every N minutes', ScheduleRules::due(null, 30, [], null, $sat) && ScheduleRules::due(null, 30, [], Carbon::parse('2026-11-28 17:30:59'), $sat)
+    && !ScheduleRules::due(null, 30, [], Carbon::parse('2026-11-28 17:31:00'), $sat));
+check('schedule: a bad time never runs', !ScheduleRules::due('25:00', null, [], null, $sat) && !ScheduleRules::due(null, null, [], null, $sat));
+check('schedule: described in words', ScheduleRules::describe('18:00', null, [6]) === 'At 18:00 on Sat' && ScheduleRules::describe(null, 15, []) === 'Every 15 minutes' && ScheduleRules::describe('09:30', null, []) === 'At 09:30 every day');
+
+// ---------------- the public status page
+$page = (new ReflectionClass(\Ginjer\Network\Services\Status\StatusPage::class))->newInstanceWithoutConstructor();
+$html = $page->html(['name' => '<Ginjer>', 'maintenance' => false, 'reachable' => true, 'players' => 7,
+    'shards' => [['name' => 'west', 'up' => true, 'players' => 5], ['name' => 'east', 'up' => false, 'players' => 0]],
+    'uptime' => ['day' => 99.5, 'week' => null], 'incidents' => [['shard' => 'east', 'from' => '2026-11-26T10:00:00+00:00', 'to' => '2026-11-26T10:12:00+00:00']], 'updated' => '2026-11-26T12:00:00+00:00']);
+check('status page: names are escaped', str_contains($html, '&lt;Ginjer&gt;') && !str_contains($html, '<Ginjer>'));
+check('status page: says some shards are down, with players and uptime', str_contains($html, 'Some shards are down') && str_contains($html, '5 online') && str_contains($html, '99.5%') && str_contains($html, '–'));
+check('status page: an outage with how long it lasted', str_contains($html, 'east was down') && str_contains($html, '12 minutes'));
+check('status page: works on a phone and in dark mode', str_contains($html, 'width=device-width') && str_contains($html, 'prefers-color-scheme:dark'));
 
 echo $failures === 0 ? "\nAll checks passed\n" : "\n$failures check(s) failed\n";
 exit($failures === 0 ? 0 : 1);

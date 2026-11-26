@@ -40,7 +40,8 @@ class RebalanceNetwork implements ShouldQueue
 
     public int $tries = 1;
 
-    public function __construct(public int $networkId, public string $regions, public int $userId) {}
+    /** @param  string  $regions  the new borders; ignored when undoing (the borders from before the last rebalance come back) */
+    public function __construct(public int $networkId, public string $regions, public int $userId, public bool $undo = false) {}
 
     public function handle(ServerLifecycle $lifecycle, ChunkMover $mover, ShardConfigService $config): void
     {
@@ -53,13 +54,21 @@ class RebalanceNetwork implements ShouldQueue
         $saved = false;
         Busy::start($network->id, 180);
 
+        $what = $this->undo ? 'Undoing the rebalance' : 'Rebalancing';
         try {
+            $last = $network->last_rebalance;
+            if ($this->undo && empty($last['before'])) {
+                throw new \RuntimeException('There is no rebalance to undo.');
+            }
+            $this->regions = $this->undo ? (string) $last['before'] : $this->regions;
             $problems = RegionList::problems($this->regions, array_keys($shards));
             if ($problems !== []) {
                 throw new \RuntimeException('The new borders aren\'t valid: ' . implode(' ', $problems));
             }
             $before = new ShardMap(RegionList::parse((string) $network->regions));
             $after = new ShardMap(RegionList::parse($this->regions));
+
+            app(\Ginjer\Network\Services\Ops\NetworkBackups::class)->safetyBackup($network, $this->undo ? 'undoing the rebalance' : 'rebalancing');
 
             // 1. everyone off, after a warning: the proxy first, then the shards
             foreach (array_values($shards) as $server) {
@@ -72,29 +81,39 @@ class RebalanceNetwork implements ShouldQueue
                 throw new \RuntimeException(implode(', ', array_map(fn ($s) => $s->name, $stuck)) . ' didn\'t stop, so no world files were touched.');
             }
 
-            // 2. copy the land that changes hands
-            $plan = $mover->plan($shards, $world, $before, $after);
-            $copied = $mover->apply($shards, $world, $plan['moves']);
+            // 2. copy the land that changes hands (or put the old world files back)
+            $oldRegions = (string) $network->regions;
+            if ($this->undo) {
+                $restored = $mover->undo($shards, $last['files'] ?? []);
+                $network->update(['regions' => $this->regions, 'last_rebalance' => null]);
+                $summary = "Put back $restored world file(s) and the borders from before.";
+            } else {
+                $plan = $mover->plan($shards, $world, $before, $after);
+                $copied = $mover->apply($shards, $world, $plan['moves']);
+                $network->update(['regions' => $this->regions, 'last_rebalance' => [
+                    'at' => now()->toIso8601String(), 'before' => $oldRegions, 'after' => $this->regions, 'files' => $mover->written,
+                ]]);
+                $summary = "Moved $copied chunk(s) in {$plan['files']} region file(s).";
+            }
 
             // 3. the new borders, on every shard
-            $network->update(['regions' => $this->regions]);
             $saved = true;
             $results = collect($config->push($network->refresh()->load('members.server')));
             $failedPush = $results->where('ok', false)->pluck('server')->all();
 
-            $summary = "Moved $copied chunk(s) in {$plan['files']} region file(s)." . ($failedPush === [] ? '' : ' The config push failed on ' . implode(', ', $failedPush) . ': push it again before starting those.');
-            NetworkLog::record($network, 'rebalance', 'Shard borders rebalanced', $summary, $failedPush === [] ? 'success' : 'warning', $user->id);
+            $summary .= ($failedPush === [] ? '' : ' The config push failed on ' . implode(', ', $failedPush) . ': push it again before starting those.');
+            NetworkLog::record($network, 'rebalance', $this->undo ? 'Rebalance undone' : 'Shard borders rebalanced', $summary, $failedPush === [] ? 'success' : 'warning', $user->id);
             Notification::make()
-                ->title("{$network->name} rebalanced")
+                ->title($this->undo ? "{$network->name}: rebalance undone" : "{$network->name} rebalanced")
                 ->body($summary . ' The network is starting again.')
                 ->color($failedPush === [] ? 'success' : 'warning')
                 ->actions([Action::make('open')->label('Open network')->url(NetworkResource::getUrl('edit', ['record' => $network], panel: 'admin'))])
                 ->sendToDatabase($user);
         } catch (Throwable $exception) {
             report($exception);
-            NetworkLog::record($network, 'rebalance', 'Rebalancing failed', $exception->getMessage() . ($saved ? '' : ' The old borders are still in place.'), 'danger', $user->id);
+            NetworkLog::record($network, 'rebalance', "$what failed", $exception->getMessage() . ($saved ? '' : ' The old borders are still in place.'), 'danger', $user->id);
             Notification::make()
-                ->title("Rebalancing {$network->name} failed")
+                ->title("$what of {$network->name} failed")
                 ->body($exception->getMessage() . ($saved ? '' : ' The old borders are still in place; the servers that were running are starting again.'))
                 ->danger()
                 ->sendToDatabase($user);

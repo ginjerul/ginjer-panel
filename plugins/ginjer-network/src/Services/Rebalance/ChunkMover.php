@@ -20,6 +20,9 @@ class ChunkMover
 
     public const OLD = '.ginjer-old';
 
+    /** @var list<array{shard: string, path: string, backup: bool}> every file the last apply() wrote; backup: the old one is at path.ginjer-old */
+    public array $written = [];
+
     public function __construct(private DaemonFileRepository $files) {}
 
     /**
@@ -70,6 +73,7 @@ class ChunkMover
     public function apply(array $shards, string $world, array $moves, ?callable $progress = null): int
     {
         $copied = 0;
+        $this->written = [];
         foreach ($moves as $target => $files) {
             foreach ($files as $file => $sources) {
                 foreach (self::DIRS as $dir) {
@@ -94,7 +98,7 @@ class ChunkMover
                                 $mcc = "$world/$dir/c." . ($rx * 32 + $i % 32) . '.' . ($rz * 32 + intdiv($i, 32)) . '.mcc';
                                 $bytes = $this->read($shards[$source], $mcc);
                                 if ($bytes !== null) {
-                                    $this->files->setServer($shards[$target])->putContent($mcc, $bytes);
+                                    $this->write($shards, $target, $mcc, $bytes);
                                 }
                             }
                         }
@@ -102,10 +106,7 @@ class ChunkMover
                     if (!$changed) {
                         continue;
                     }
-                    if ($original !== null) {
-                        $this->files->setServer($shards[$target])->putContent($path . self::OLD, $original);
-                    }
-                    $this->files->setServer($shards[$target])->putContent($path, Anvil::write($chunks));
+                    $this->write($shards, $target, $path, Anvil::write($chunks), $original);
                 }
                 if ($progress) {
                     $progress($target, $file);
@@ -114,6 +115,51 @@ class ChunkMover
         }
 
         return $copied;
+    }
+
+    /** Writes a file, keeping the one it replaces as .ginjer-old, and remembers it for undo. */
+    private function write(array $shards, string $target, string $path, string $bytes, string|false|null $original = false): void
+    {
+        $server = $shards[$target];
+        if ($original === false) {
+            $original = $this->read($server, $path);
+        }
+        if (collect($this->written)->contains(fn ($w) => $w['shard'] === $target && $w['path'] === $path)) {
+            $original = null; // written twice: the first write already kept the real original
+        } elseif ($original !== null) {
+            $this->files->setServer($server)->putContent($path . self::OLD, $original);
+        }
+        $this->files->setServer($server)->putContent($path, $bytes);
+        if (!collect($this->written)->contains(fn ($w) => $w['shard'] === $target && $w['path'] === $path)) {
+            $this->written[] = ['shard' => $target, 'path' => $path, 'backup' => $original !== null];
+        }
+    }
+
+    /**
+     * Puts back what apply() changed: the .ginjer-old files over the new ones, and files that
+     * didn't exist before removed. Returns how many files were put back.
+     *
+     * @param  array<string, Server>  $shards
+     * @param  list<array{shard: string, path: string, backup: bool}>  $written
+     */
+    public function undo(array $shards, array $written): int
+    {
+        $count = 0;
+        foreach ($written as $w) {
+            $server = $shards[$w['shard']] ?? null;
+            if ($server === null) {
+                continue;
+            }
+            $dir = '/' . trim(dirname($w['path']), '/.');
+            $name = basename($w['path']);
+            $this->files->setServer($server)->deleteFiles($dir, [$name]);
+            if ($w['backup']) {
+                $this->files->setServer($server)->renameFiles($dir, [['from' => $name . self::OLD, 'to' => $name]]);
+            }
+            $count++;
+        }
+
+        return $count;
     }
 
     private function read(Server $server, string $path): ?string

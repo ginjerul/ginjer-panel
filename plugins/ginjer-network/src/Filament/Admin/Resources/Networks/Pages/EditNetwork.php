@@ -240,6 +240,12 @@ class EditNetwork extends EditRecord
                     ->icon('tabler-list-details')
                     ->visible(fn () => $this->userCan('view'))
                     ->url(fn () => NetworkResource::getUrl('activity', ['record' => $this->getRecord()])),
+                Action::make('exclude_page_schedules')
+                    ->label('Schedules')
+                    ->tooltip('Announcements and commands at set times')
+                    ->icon('tabler-calendar-time')
+                    ->visible(fn () => $this->userCan('control'))
+                    ->url(fn () => NetworkResource::getUrl('schedules', ['record' => $this->getRecord()])),
                 Action::make('exclude_page_history')
                     ->label('History')
                     ->tooltip('A week of TPS, players and memory')

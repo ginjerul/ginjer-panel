@@ -267,7 +267,7 @@ try {
     $fs[$east->uuid]['plugins/spark.jar.disabled'] = $fs[$east->uuid]['plugins/spark.jar'];
     unset($fs[$east->uuid]['plugins/spark.jar']);
 
-    $network = Network::create(['name' => 'ops-net', 'world' => 'world', 'regions' => '', 'redis_host' => '127.0.0.1', 'redis_port' => 1, 'key_prefix' => 'nodes',
+    $network = Network::create(['name' => 'ops-net', 'world' => 'world', 'regions' => '', 'backup_before_risky' => false /* tested on its own below */, 'redis_host' => '127.0.0.1', 'redis_port' => 1, 'key_prefix' => 'nodes',
         'nodes_repo' => 'ginjerul/ginjer-nodes', 'nodes_release' => 'dev-master', 'github_token' => 'ghp_test', 'restart_settle_seconds' => 0, 'lag_tps' => 15, 'lag_minutes' => 3]);
     foreach ([[$redis, MemberRole::Redis, null, false], [$west, MemberRole::Shard, 'west', true], [$east, MemberRole::Shard, 'east', false],
         [$north, MemberRole::Shard, 'north', false], [$proxy, MemberRole::Proxy, null, false]] as [$s, $role, $shard, $leader]) {
@@ -677,6 +677,113 @@ try {
         $note = DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->first(fn ($d) => str_contains($d, 'Test copy of ops-net is ready'));
         check('test copy: warns about the shared player-data mount', $note !== null && str_contains($note, 'never the real network'), (string) $note);
     }
+
+    // ---------------- safety: a backup first, undo, rehearsal
+    $GLOBALS['backupsSucceed'] = true;
+    Backup::created(function (Backup $backup) {
+        // Wings reports back at once
+        $backup->forceFill(['is_successful' => $GLOBALS['backupsSucceed'], 'completed_at' => now(), 'bytes' => 1024])->saveQuietly();
+    });
+    $network->refresh()->update(['backup_before_risky' => true]);
+    $before = NetworkBackup::where('network_id', $network->id)->count();
+    $group = app(NetworkBackups::class)->safetyBackup($network, 'testing');
+    check('safety: a backup is taken and waited for', $group !== null && $group->status === 'done' && str_starts_with($group->name, 'Before testing') && NetworkBackup::where('network_id', $network->id)->count() === $before + 1);
+    $GLOBALS['backupsSucceed'] = false;
+    $log = [];
+    $regionsNow = $network->regions;
+    app()->call([new \Ginjer\Network\Jobs\RebalanceNetwork($network->id, str_replace('max-x: -256', 'max-x: -512', $regionsNow), $user->id), 'handle']);
+    check('safety: a failed backup stops the rebalance before anything is stopped', $network->refresh()->regions === $regionsNow && !collect($log)->contains(fn ($l) => str_ends_with($l, ' stop')), json_encode($log));
+    check('safety: and says why', DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->contains(fn ($d) => str_contains($d, 'The backup before rebalancing failed')));
+    $GLOBALS['backupsSucceed'] = true;
+
+    // rebalance, then undo it
+    foreach ([$west, $east, $proxy] as $s) {
+        $state[$s->uuid] = 'running';
+    }
+    $fs[$west->uuid]['world/region/r.-1.0.mca'] = $A::write([20 => ['payload' => $payload('west owns this'), 'time' => 5], 30 => ['payload' => $payload('west also'), 'time' => 5]]);
+    $fs[$east->uuid]['world/region/r.-1.0.mca'] = $A::write([20 => ['payload' => $payload('east before'), 'time' => 1]]);
+    unset($fs[$east->uuid]['world/region/r.-1.0.mca.ginjer-old'], $fs[$east->uuid]['world/entities/r.-1.0.mca']);
+    $fs[$west->uuid]['world/entities/r.-1.0.mca'] = $A::write([30 => ['payload' => $payload('west entities'), 'time' => 5]]);
+    $original = "- {server: west, min-x: -30000000, min-z: -30000000, max-x: 0, max-z: 30000000}\n- {server: east, min-x: 0, min-z: -30000000, max-x: 30000000, max-z: 30000000}\n- {server: north, min-x: 0, min-z: 30000000, max-x: 1000, max-z: 30000016}\n";
+    $network->update(['regions' => $original, 'last_rebalance' => null]);
+    $eastBefore = $fs[$east->uuid]['world/region/r.-1.0.mca'];
+    $backupsBefore = NetworkBackup::where('network_id', $network->id)->count();
+    app()->call([new \Ginjer\Network\Jobs\RebalanceNetwork($network->id, $newRegions, $user->id), 'handle']);
+    $last = $network->refresh()->last_rebalance;
+    check('rebalance: a backup was taken first', NetworkBackup::where('network_id', $network->id)->count() === $backupsBefore + 1);
+    check('rebalance: what changed is remembered for undo', ($last['before'] ?? null) === $original && collect($last['files'] ?? [])->contains(fn ($f) => $f['shard'] === 'east' && $f['path'] === 'world/region/r.-1.0.mca' && $f['backup'])
+        && collect($last['files'])->contains(fn ($f) => $f['path'] === 'world/entities/r.-1.0.mca' && !$f['backup']), json_encode($last));
+    $log = [];
+    app()->call([new \Ginjer\Network\Jobs\RebalanceNetwork($network->id, '', $user->id, true), 'handle']);
+    check('undo: the old borders are back', $network->refresh()->regions === $original && $network->last_rebalance === null);
+    check('undo: the old world files are back', ($fs[$east->uuid]['world/region/r.-1.0.mca'] ?? null) === $eastBefore && !isset($fs[$east->uuid]['world/region/r.-1.0.mca.ginjer-old']));
+    check('undo: files that didn\'t exist before are removed', !isset($fs[$east->uuid]['world/entities/r.-1.0.mca']));
+    check('undo: stopped, backed up and started again', in_array('power east stop', $log, true) && in_array('power east start', $log, true) && collect($log)->contains(fn ($l) => str_starts_with($l, 'backup ')), json_encode($log));
+    $log = [];
+    app()->call([new \Ginjer\Network\Jobs\RebalanceNetwork($network->id, '', $user->id, true), 'handle']);
+    check('undo: nothing to undo twice', !collect($log)->contains(fn ($l) => str_ends_with($l, ' stop')) && DB::table('notifications')->where('notifiable_id', $user->id)->get()->pluck('data')->contains(fn ($d) => str_contains($d, 'There is no rebalance to undo')));
+
+    // a rehearsal: a test copy, then the copy is rebalanced
+    $copies = Network::where('test_of_network_id', $network->id)->count();
+    $backupsBefore = NetworkBackup::count();
+    app()->call([new \Ginjer\Network\Jobs\CopyNetwork($network->id, ['name' => 'ops-net rehearsal', 'memory_percent' => 25, 'rehearse' => $newRegions], $user->id), 'handle']);
+    $rehearsal = Network::where('name', 'ops-net rehearsal')->first();
+    check('rehearse: a test copy rebalanced to the new borders', $rehearsal !== null && $rehearsal->regions === $newRegions && $rehearsal->last_rebalance !== null && Network::where('test_of_network_id', $network->id)->count() === $copies + 1);
+    check('rehearse: the real network is unchanged and the copy needs no backup', $network->refresh()->regions === $original && NetworkBackup::count() === $backupsBefore);
+    $network->update(['backup_before_risky' => false]);
+
+    // ---------------- schedules
+    $state[$west->uuid] = 'running';
+    $state[$east->uuid] = 'running';
+    $state[$north->uuid] = 'offline';
+    $schedule = \Ginjer\Network\Models\NetworkSchedule::create(['network_id' => $network->id, 'name' => 'War warning', 'commands' => "/say War in 1 hour!\n\ntitle @a title \"War\"", 'targets' => 'shards', 'at_time' => now()->format('H:i')]);
+    \Ginjer\Network\Models\NetworkSchedule::create(['network_id' => $network->id, 'name' => 'Later', 'commands' => 'say later', 'at_time' => now()->addMinutes(5)->format('H:i')]);
+    \Ginjer\Network\Models\NetworkSchedule::create(['network_id' => $network->id, 'name' => 'Off', 'commands' => 'say off', 'at_time' => now()->format('H:i'), 'enabled' => false]);
+    $log = [];
+    \Illuminate\Support\Facades\Artisan::call('p:ginjer:schedules');
+    check('schedules: due commands run on every running shard, slashes and blank lines dropped', in_array('command west say War in 1 hour! + title @a title "War"', $log, true) && in_array('command east say War in 1 hour! + title @a title "War"', $log, true), json_encode($log));
+    check('schedules: not the proxy, nor ones not due or switched off', !collect($log)->contains(fn ($l) => str_contains($l, 'proxy') || str_contains($l, 'later') || str_contains($l, 'say off')));
+    $log = [];
+    \Illuminate\Support\Facades\Artisan::call('p:ginjer:schedules');
+    check('schedules: once per minute', $log === [] && $schedule->refresh()->last_run_at !== null);
+    $schedule->update(['targets' => 'proxy', 'last_run_at' => null]);
+    $state[$proxy->uuid] = 'offline';
+    \Illuminate\Support\Facades\Artisan::call('p:ginjer:schedules');
+    check('schedules: when no server could run it, the activity log says so', \Ginjer\Network\Models\NetworkEvent::where('network_id', $network->id)->where('kind', 'schedule')->where('title', 'Scheduled "War warning" didn\'t run')->exists());
+    $state[$proxy->uuid] = 'running';
+
+    // ---------------- public status page
+    $statusUrl = '/ginjer-status/' . \Ginjer\Network\Services\Status\StatusPage::token($network);
+    // the controller is called directly: a full HTTP request through the kernel would end this test's database transaction
+    check('status page: the public route is registered', \Illuminate\Support\Facades\Route::getRoutes()->getByName('ginjer-network.status')?->uri() === 'ginjer-status/{token}');
+    $get = function (string $url) {
+        try {
+            return app()->call([app(\Ginjer\Network\Http\Controllers\StatusController::class), '__invoke'], ['token' => substr($url, strlen('/ginjer-status/'))]);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $exception) {
+            return new \Illuminate\Http\Response('', $exception->getStatusCode());
+        }
+    };
+    check('status page: hidden until it\'s made public', $get($statusUrl)->getStatusCode() === 404);
+    $network->update(['status_public' => true]);
+    Cache::flush();
+    $response = $get($statusUrl);
+    check('status page: public, without logging in', $response->getStatusCode() === 200 && str_contains($response->getContent(), 'ops-net') && str_contains($response->getContent(), 'west'), substr($response->getContent(), 0, 300));
+    check('status page: says when it can\'t tell', str_contains($response->getContent(), 'Status unknown')); // Redis isn't reachable in this test
+    check('status page: no server names or addresses', !str_contains($response->getContent(), '10.2.0.1') && !str_contains($response->getContent(), 'redis'));
+    $json = json_decode($get($statusUrl . '.json')->getContent(), true);
+    check('status page: as JSON too', ($json['name'] ?? '') === 'ops-net' && count($json['shards']) === 3 && array_key_exists('uptime', $json), json_encode($json));
+    check('status page: outages from the health checks', collect($json['incidents'])->contains(fn ($i) => $i['shard'] === 'east'), json_encode($json['incidents']));
+    check('status page: a wrong address is a 404', $get('/ginjer-status/' . str_repeat('a', 32))->getStatusCode() === 404);
+
+    // ---------------- node capacity
+    $capacity = app(\Ginjer\Network\Services\Ops\NodeCapacity::class);
+    $nodeRows = collect($capacity->nodes(false))->keyBy('name');
+    $opsNode = $nodeRows['ops-node'] ?? null;
+    check('capacity: memory given out against the node\'s limit', $opsNode !== null && $opsNode['memory']['limit'] === 65536 && $opsNode['memory']['given'] === (int) Server::where('node_id', $node->id)->sum('memory'), json_encode($opsNode));
+    check('capacity: free ports counted', $opsNode['ports'] === Allocation::where('node_id', $node->id)->whereNull('server_id')->count());
+    $netRow = collect($capacity->networks($nodeRows->values()->all()))->firstWhere('network', 'ops-net');
+    $expected = min(intdiv($opsNode['memory']['free'], 4096), intdiv($opsNode['disk']['free'], 10000), $opsNode['ports']);
+    check('capacity: how many more shards of the usual size fit', $netRow !== null && $netRow['memory'] === 4096 && ($expected > 0 ? in_array("ops-node ($expected)", $netRow['fits'], true) : !collect($netRow['fits'])->contains(fn ($f) => str_starts_with($f, 'ops-node'))), json_encode([$netRow, $expected]));
 
     // ---------------- Chunky and spark
     $tools = app(\Ginjer\Network\Services\Ops\ServerTools::class);

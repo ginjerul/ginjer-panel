@@ -74,6 +74,40 @@ class NetworkRebalancePage extends Page
                 ->icon('tabler-calendar')
                 ->color('gray')
                 ->action(fn () => $this->days = $this->days === 7 ? 14 : ($this->days === 14 ? 3 : 7)),
+            Action::make('exclude_rehearse')
+                ->label('Rehearse on a test copy')
+                ->icon('tabler-flask')
+                ->color('gray')
+                ->visible(fn () => $this->plan()['enough'] && $this->plan()['regions'] !== [] && $this->record->test_of_network_id === null && auth()->user()?->can('create', Network::class))
+                ->modalHeading('Rehearse on a test copy')
+                ->modalDescription('Makes a test copy of the network (new servers with a copy of every server\'s files, its own Redis and database; the real network keeps running), then rebalances the copy to these borders. Start the copy and walk around the new borders before you apply them here.')
+                ->fillForm(fn () => ['memory_percent' => 50])
+                ->schema([
+                    \Filament\Forms\Components\TextInput::make('memory_percent')->label('Memory')->numeric()->integer()->minValue(10)->maxValue(100)->suffix('% of each original'),
+                ])
+                ->modalSubmitActionLabel('Make the copy and rebalance it')
+                ->action(function (array $data) {
+                    $name = $this->record->name . ' rehearsal ' . now()->format('m-d H:i');
+                    \Ginjer\Network\Jobs\CopyNetwork::dispatch($this->record->id, ['name' => $name, 'memory_percent' => (int) $data['memory_percent'], 'rehearse' => $this->plan()['yaml']], (int) auth()->id());
+                    NetworkLog::record($this->record, 'rebalance', 'Rebalance rehearsal started', "On a test copy named \"$name\".");
+                    Notification::make()->title('Making the rehearsal copy')->body('You\'ll get a notification when the copy is ready, and another when it\'s rebalanced.')->success()->send();
+                }),
+            Action::make('exclude_undo')
+                ->label('Undo last rebalance')
+                ->icon('tabler-arrow-back-up')
+                ->color('danger')
+                ->visible(fn () => !empty($this->record->refresh()->last_rebalance['before']))
+                ->requiresConfirmation()
+                ->modalHeading('Undo the last rebalance?')
+                ->modalDescription(fn () => 'Puts back the borders and the world files from before the rebalance of '
+                    . \Illuminate\Support\Carbon::parse($this->record->last_rebalance['at'] ?? now())->diffForHumans()
+                    . '. Anything built since then on the land that changed shards is lost. The network goes down for a few minutes, after a backup.')
+                ->modalSubmitActionLabel('Undo it')
+                ->action(function () {
+                    RebalanceNetwork::dispatch($this->record->id, '', (int) auth()->id(), true);
+                    NetworkLog::record($this->record, 'rebalance', 'Undoing the last rebalance', null, 'warning');
+                    Notification::make()->title('Undoing the rebalance')->body('The network goes down for a few minutes. The result goes to your notifications.')->warning()->send();
+                }),
             Action::make('exclude_apply')
                 ->label('Apply new borders')
                 ->icon('tabler-arrows-split')
@@ -83,7 +117,7 @@ class NetworkRebalancePage extends Page
                 ->modalHeading('Move the shard borders?')
                 ->modalDescription(fn () => 'The whole network goes down for a few minutes: players get a warning, the proxy and the shards stop, the land that changes shard ('
                     . round($this->plan()['moved'] * 100) . '% of where players play) is copied from its old shard to its new one, the new borders are pushed, and everything starts again. '
-                    . 'Changed world files are kept as .ginjer-old. Take a network backup first if you haven\'t recently. The new borders are rectangles; drawn shapes are replaced.')
+                    . 'Changed world files are kept as .ginjer-old, so it can be undone. ' . ($this->record->backup_before_risky ? 'A network backup is taken first. ' : 'Backing up first is off for this network: take a network backup yourself. ') . 'The new borders are rectangles; drawn shapes are replaced.')
                 ->modalSubmitActionLabel('Rebalance now')
                 ->action(function () {
                     RebalanceNetwork::dispatch($this->record->id, $this->plan()['yaml'], (int) auth()->id());

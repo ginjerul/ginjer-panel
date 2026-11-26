@@ -43,7 +43,7 @@ class CopyNetwork implements ShouldQueue
 
     public const SKIP = ['logs', 'crash-reports', 'debug', 'cache', '.cache'];
 
-    /** @param  array{name: string, memory_percent: int}  $options */
+    /** @param  array{name: string, memory_percent: int, rehearse?: string}  $options  rehearse: new borders to rebalance the copy to once it's made */
     public function __construct(public int $networkId, public array $options, public int $userId) {}
 
     public function handle(ServerCreationService $creation, DaemonFileRepository $files, NodeJWTService $jwt, ShardConfigService $config): void
@@ -124,6 +124,10 @@ class CopyNetwork implements ShouldQueue
                 $warnings[] = 'The shared player-data folder is a mount the copies don\'t have: give them their own mount (never the real network\'s), or inventories won\'t follow players across borders in the test.';
             }
 
+            if (filled($this->options['rehearse'] ?? null)) {
+                RebalanceNetwork::dispatch($network->id, $this->options['rehearse'], $user->id);
+                $done[] = 'started rebalancing the copy to the proposed borders (a second notification follows)';
+            }
             NetworkLog::record($source, 'copy', "Test copy \"{$network->name}\" made", implode('; ', $done), 'info', $user->id);
             Notification::make()
                 ->title("Test copy of {$source->name} is ready")

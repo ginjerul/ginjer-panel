@@ -38,7 +38,7 @@ class NetworkBackups
      *
      * @return array{backup: NetworkBackup, problems: list<string>}
      */
-    public function take(Network $network, ?string $name = null): array
+    public function take(Network $network, ?string $name = null, bool $prune = true): array
     {
         $network->loadMissing('members.server');
         $name ??= 'Network backup ' . now()->format('Y-m-d H:i');
@@ -79,9 +79,35 @@ class NetworkBackups
             'note' => $problems === [] ? null : implode(' ', $problems),
         ]);
         $network->update(['last_backup_at' => now()]);
-        $this->prune($network);
+        if ($prune) {
+            $this->prune($network);
+        }
 
         return ['backup' => $group, 'problems' => $problems];
+    }
+
+    /**
+     * A network backup before something that's hard to undo, waited for until it's finished. Null
+     * when the network has this turned off, or for a test copy. Throws if the backup fails, so the
+     * risky part never starts without one.
+     */
+    public function safetyBackup(Network $network, string $before, int $timeoutSeconds = 3600): ?NetworkBackup
+    {
+        if (!$network->backup_before_risky || $network->test_of_network_id !== null) {
+            return null;
+        }
+        // no pruning: a restore's own backup could be the oldest kept one
+        $group = $this->take($network, "Before $before " . now()->format('Y-m-d H:i'), false)['backup'];
+        for ($waited = 0; $group->status === 'running' && $waited < $timeoutSeconds; $waited += 5) {
+            ServerLifecycle::sleep(5);
+            $group->refresh()->refreshStatus();
+        }
+        if ($group->status !== 'done') {
+            throw new \RuntimeException("The backup before $before " . ($group->status === 'running' ? 'took too long' : 'failed' . ($group->note ? " ({$group->note})" : ''))
+                . '. Nothing else was done. Turn off "Back up first" under Backups on the network to go ahead without one.');
+        }
+
+        return $group;
     }
 
     /** Deletes the oldest network backups beyond the network's "keep" setting, with their server backups. */

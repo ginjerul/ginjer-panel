@@ -37,6 +37,11 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 - **Rebalance shards:** the panel records every minute where players are (time on a lagging shard counts more). From the last week it proposes new borders that share the load evenly, and shows them on a map next to today's. Each shard keeps the area nearest its old one. Applying it stops the network for a few minutes. It copies the land that changes hands from its old shard's world files to its new shard's, since every shard keeps its own copy of the world. Then it pushes the new borders and starts everything again. Changed world files are kept as `.ginjer-old`.
 - **Test copy** (More menu): new servers on the same nodes with a copy of every server's files as they are now, joined in a new network with its own Redis and an empty database of its own. Try updates and plugins there first. It starts stopped, with alerts, Discord and backups off.
 - **Staff roles:** under Admin → Roles, **Network** has permissions for viewing, controlling (power, updates, maintenance, backups), the console, players, and changing settings. Moderators can get the console and the player list without being root admins.
+- **Back up first** (on by default, under Backups): before an update, a rebalance, an undo or a restore, the panel takes a network backup and waits for it to finish. If it fails, nothing else happens.
+- **Undo a rebalance:** puts back the world files kept as `.ginjer-old` and the borders from before, with the network stopped. Anything built since on the land that changed shards is lost, so undo soon.
+- **Rehearse a rebalance:** makes a test copy and rebalances the copy to the proposed borders, so you can walk the new borders before applying them to the real network.
+- **Schedules** (Tools menu): console commands at a time of day or every few minutes, on chosen weekdays, on every shard, the proxy or both. Use them for announcements like "the war starts in 1 hour" every Saturday at 18:00. Offline servers skip it, and a schedule no server could run shows in the activity log.
+- **Public status page:** turn it on under **Public status page** on the network. Players get an address (no login) showing whether each shard is up, players online, uptime over 24 hours and 7 days, and outages this week. It's also available as JSON, for a Discord bot or a website. It shows no server names, addresses or error details, and it's cached for 30 seconds.
 - **Promote now:** runs `nda shards promote` on a follower when the leader is down.
 - **Velocity servers:** the `[servers]` lines for the proxy's `velocity.toml`. With a proxy in the network, **Push config** writes them for you. It also keeps every comment, puts the leader first in `try`, drops the sample forced hosts that would stop Velocity from starting, sets forwarding to `modern`, and gives every shard the proxy's `forwarding.secret` (through the egg's `VELOCITY_SECRET` and in `paper-global.yml`). Shards on the proxy's node that listen on every interface are reached through Wings' Docker gateway (`GINJER_NETWORK_DOCKER_GATEWAY`, default `172.18.0.1`), and shards on other nodes through their node's address.
 
@@ -55,6 +60,8 @@ Under **Ginjer → Networks** in the admin area, a network groups the servers th
 | ![Every shard's log merged by time, an error in red](docs/screenshots/network-console.png) | ![Players online on each shard with ping and position](docs/screenshots/network-players.png) |
 | **Activity** | **Rebalance shards** |
 | ![Alerts, a crash explained, and who did what](docs/screenshots/network-activity.png) | ![Load per shard now and with new borders, and a map of where players play](docs/screenshots/network-rebalance.png) |
+| **Schedules** | **Public status page** |
+| ![Scheduled announcements: a war warning on Saturdays, a vote reminder every 45 minutes](docs/screenshots/network-schedules.png) | ![The public status page on a phone: shards up and down, uptime and an outage](docs/screenshots/status-page.png) |
 | **Config sync** | **Shared database** |
 | ![Config sync: three plugin files, one different and two missing on other shards; reef.yml refused](docs/screenshots/network-config-sync.png) | ![The network database's connection details after LuckPerms was set up on three shards](docs/screenshots/network-database.png) |
 
@@ -95,6 +102,12 @@ Settings (optional, in the panel's `.env`):
 | `GINJER_NETWORK_REEF_CONFIG` | `reef.yml` | Reef's config file, relative to the server folder |
 | `GINJER_NETWORK_NODES_CONFIG` | `plugins/nodes/config.yml` | Nodes' config file |
 | `GINJER_NETWORK_REDIS_TIMEOUT` | `2` | Seconds to wait for Redis when reading the status |
+
+## Node capacity
+
+**Ginjer → Node capacity** shows, for every node, the memory and disk Pelican has given out against what the node allows (with overallocation), what the machine really uses right now (from Wings), and free ports. For each network it says on which nodes another shard of the usual size would fit, and how many.
+
+![Node capacity: memory and disk given out on a node, and room for more shards per network](docs/screenshots/node-capacity.png)
 
 ## Server pages
 

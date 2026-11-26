@@ -22,6 +22,7 @@ use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkConsolePage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPlayersPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkPluginUpdatesPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkRebalancePage;
+use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkSchedulesPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkConfigSyncPage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkDatabasePage;
 use Ginjer\Network\Filament\Admin\Resources\Networks\Pages\NetworkHistoryPage;
@@ -307,6 +308,26 @@ class NetworkResource extends Resource
                             ->default(5)
                             ->required()
                             ->helperText('Older ones are deleted, including their server backups.'),
+                        \Filament\Forms\Components\Toggle::make('backup_before_risky')
+                            ->label('Back up first')
+                            ->helperText('Before an update, a rebalance or a restore, take a network backup and wait for it. If it fails, nothing else happens.')
+                            ->default(true)
+                            ->columnSpanFull(),
+                    ]),
+                Section::make('Public status page')
+                    ->description('A page anyone can open, without logging in: whether each shard is up, players per shard, uptime and recent outages. No server names, addresses or plugin details.')
+                    ->columns(2)
+                    ->collapsible()
+                    ->collapsed(fn (?Network $record) => !$record?->status_public)
+                    ->schema([
+                        \Filament\Forms\Components\Toggle::make('status_public')
+                            ->label('Public')
+                            ->live()
+                            ->inline(false),
+                        \Filament\Forms\Components\Placeholder::make('status_link')
+                            ->label('Address')
+                            ->visible(fn (?Network $record, \Filament\Schemas\Components\Utilities\Get $get) => $record !== null && $get('status_public'))
+                            ->content(fn (?Network $record) => $record ? new \Illuminate\Support\HtmlString('<a href="' . e(\Ginjer\Network\Services\Status\StatusPage::url($record)) . '" target="_blank" style="text-decoration:underline">' . e(\Ginjer\Network\Services\Status\StatusPage::url($record)) . '</a><br><span style="opacity:.7">Also as JSON: add .json. Saved when you save the network.</span>') : null),
                     ]),
             ]);
     }
@@ -333,6 +354,7 @@ class NetworkResource extends Resource
             'players' => NetworkPlayersPage::route('/{record}/players'),
             'plugin-updates' => NetworkPluginUpdatesPage::route('/{record}/plugin-updates'),
             'rebalance' => NetworkRebalancePage::route('/{record}/rebalance'),
+            'schedules' => NetworkSchedulesPage::route('/{record}/schedules'),
             'database' => NetworkDatabasePage::route('/{record}/database'),
         ];
     }

@@ -29,7 +29,9 @@ class RestoreNetworkBackup implements ShouldQueue
         $user = User::findOrFail($this->userId);
         Busy::start($group->network_id, 60);
         try {
-            $problems = $backups->restore($group, $user);
+            // the state right now, so a restore to the wrong backup can itself be undone
+            $backups->safetyBackup($group->network, 'restoring "' . $group->name . '"');
+            $problems = $backups->restore($group->refresh(), $user);
             \Ginjer\Network\Services\Activity\NetworkLog::record($group->network, 'restore', "Restored to \"{$group->name}\"", $problems === [] ? null : implode(' ', $problems), $problems === [] ? 'warning' : 'danger', $user->id);
             Notification::make()
                 ->title($problems === [] ? "Restoring {$group->network->name} to \"{$group->name}\"" : "Restoring {$group->network->name} partly failed")

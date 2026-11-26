@@ -55,6 +55,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property ?string $maintenance_motd
  * @property ?string $maintenance_allow
  * @property ?int $test_of_network_id
+ * @property bool $backup_before_risky
+ * @property ?array $last_rebalance
+ * @property bool $status_public
+ * @property ?string $status_token
  * @property Collection<int, NetworkMember> $members
  */
 class Network extends Model
@@ -104,6 +108,10 @@ class Network extends Model
         'maintenance_motd',
         'maintenance_allow',
         'test_of_network_id',
+        'backup_before_risky',
+        'last_rebalance',
+        'status_public',
+        'status_token',
     ];
 
     protected $hidden = ['redis_password', 'github_token'];
@@ -115,6 +123,9 @@ class Network extends Model
             'github_token' => 'encrypted',
             'discord_webhook' => 'encrypted',
             'maintenance' => 'boolean',
+            'backup_before_risky' => 'boolean',
+            'last_rebalance' => 'array',
+            'status_public' => 'boolean',
             'health_alerts' => 'boolean',
             'restart_on_lag' => 'boolean',
             'last_backup_at' => 'datetime',

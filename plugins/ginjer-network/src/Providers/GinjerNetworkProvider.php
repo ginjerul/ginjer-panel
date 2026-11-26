@@ -22,6 +22,7 @@ class GinjerNetworkProvider extends ServiceProvider
         $this->callAfterResolving(Schedule::class, function (Schedule $schedule) {
             $schedule->command('p:ginjer:health')->everyMinute()->withoutOverlapping(5);
             $schedule->command('p:ginjer:restarts')->everyMinute()->withoutOverlapping(5);
+            $schedule->command('p:ginjer:schedules')->everyMinute()->withoutOverlapping(5);
             $schedule->command('p:ginjer:backups')->everyFifteenMinutes()->withoutOverlapping(60);
         });
     }

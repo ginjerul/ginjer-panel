@@ -88,6 +88,11 @@ class RollingUpdate implements ShouldQueue
                 $done[] = 'uploaded to ' . $shards->count() . ' shard(s)';
             }
 
+            // a backup first, so a bad build can be rolled back
+            if ($local !== [] && app(\Ginjer\Network\Services\Ops\NetworkBackups::class)->safetyBackup($network, 'the update')) {
+                $done[] = 'backed up the network first';
+            }
+
             // 3. batch by batch, in the network's rolling restart order
             $servers = $network->members->mapWithKeys(fn (NetworkMember $m) => [$m->server_id => $m->server]);
             $batches = RollingPlan::batches(
